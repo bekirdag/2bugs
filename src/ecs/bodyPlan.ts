@@ -142,11 +142,11 @@ const SENSE_WEIGHT: Record<SenseGene['sense'], number> = {
 }
 
 const SENSE_COST: Record<SenseGene['sense'], number> = {
-  eye: 0.4,
-  ear: 0.3,
-  nose: 0.2,
-  touch: 0.15,
-  taste: 0.1,
+  eye: 0.2,
+  ear: 0.15,
+  nose: 0.1,
+  touch: 0.08,
+  taste: 0.05,
 }
 
 export type SenseDerivedStats = {

@@ -141,8 +141,15 @@ export function createWorldFromSnapshot(snapshot: SimulationSnapshot): Simulatio
 
 function spawnInitialPopulation(ctx: SimulationContext) {
   const totalAgents = ctx.config.maxAgents
-  const archetypeSlots: Archetype[] = ['hunter', 'hunter', 'prey', 'prey', 'scavenger', 'scavenger']
-  const clusterCount = archetypeSlots.length
+  const archetypeBiomeSlots: { archetype: Archetype; biome: Biome }[] = [
+    { archetype: 'hunter', biome: 'land' },
+    { archetype: 'hunter', biome: 'water' },
+    { archetype: 'hunter', biome: 'air' },
+    { archetype: 'prey', biome: 'land' },
+    { archetype: 'prey', biome: 'water' },
+    { archetype: 'prey', biome: 'air' },
+  ]
+  const clusterCount = archetypeBiomeSlots.length
   const perCluster = Math.floor(totalAgents / clusterCount)
   const remainder = totalAgents % clusterCount
   const radius = Math.min(ctx.config.bounds.x, ctx.config.bounds.y) * 0.02
@@ -154,13 +161,15 @@ function spawnInitialPopulation(ctx: SimulationContext) {
       y: center.y + Math.sin(angle) * radius * 3,
     }
   })
-  archetypeSlots.forEach((archetype, idx) => {
+  archetypeBiomeSlots.forEach(({ archetype, biome }, idx) => {
     const count = perCluster + (idx < remainder ? 1 : 0)
     const clusterCenter = clusterCenters[idx]
     const colorPool = archetype === 'hunter' ? HUNTER_COLORS : PREY_COLORS
-    const color = colorPool[idx % colorPool.length]
     for (let i = 0; i < count; i++) {
-      const dna = { ...buildDNA(ctx, archetype), familyColor: colorPool[(idx + i) % colorPool.length] }
+      const dna = {
+        ...buildDNA(ctx, archetype, biome),
+        familyColor: colorPool[(idx + i) % colorPool.length],
+      }
       spawnAgent(ctx, archetype, dna, jitter(ctx.rng, clusterCenter, radius * 0.8))
     }
   })

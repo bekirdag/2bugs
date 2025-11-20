@@ -85,25 +85,25 @@ export function applyGeneDominance(
 export function randomGeneValue(gene: GeneKey, rng: () => number): number {
   switch (gene) {
     case 'baseSpeed':
-      return 180 + rng() * 240
+      return 180 + rng() * 240 // 180..420
     case 'visionRange':
-      return 120 + rng() * 260
+      return 180 + rng() * 180 // 180..360 typical
     case 'hungerThreshold':
-      return 40 + rng() * 60
+      return 40 + rng() * 50 // 40..90
     case 'fatCapacity':
-      return 80 + rng() * 160
+      return 120 + rng() * 1880 // 120..2000
     case 'fatBurnThreshold':
-      return 30 + rng() * 70
+      return 40 + rng() * 30 // 40..70
     case 'patrolThreshold':
-      return 10 + rng() * 70
+      return 20 + rng() * 50 // 20..70 (scaled further in buildDNA)
     case 'aggression':
       return rng()
     case 'bravery':
       return rng()
     case 'power':
-      return 30 + rng() * 120
+      return 30 + rng() * 110 // 30..140
     case 'defence':
-      return 20 + rng() * 90
+      return 30 + rng() * 80 // 30..110
     case 'fightPersistence':
       return rng()
     case 'escapeTendency':
@@ -113,9 +113,9 @@ export function randomGeneValue(gene: GeneKey, rng: () => number): number {
     case 'lingerRate':
       return rng()
     case 'dangerRadius':
-      return 100 + rng() * 180
+      return 120 + rng() * 120 // 120..240
     case 'attentionSpan':
-      return 0.2 + rng() * 0.8
+      return 0.35 + rng() * 0.55 // 0.35..0.9
     case 'libidoThreshold':
       return 0.2 + rng() * 0.6
     case 'libidoGainRate':
@@ -123,45 +123,45 @@ export function randomGeneValue(gene: GeneKey, rng: () => number): number {
     case 'mutationRate':
       return 0.005 + rng() * 0.03
     case 'bodyMass':
-      return 0.6 + rng() * 19.4
+      return 0.6 + rng() * 19.4 // 0.6..20
     case 'metabolism':
       return 4 + rng() * 8
     case 'turnRate':
-      return 0.5 + rng() * 2.5
+      return 1 + rng() * 2 // 1..3
     case 'curiosity':
-      return 0.2 + rng() * 0.7
+      return 0.3 + rng() * 0.6 // 0.3..0.9
     case 'cohesion':
-      return 0.1 + rng() * 0.7
+      return 0.2 + rng() * 0.6 // 0.2..0.8
     case 'fear':
-      return 0.1 + rng() * 0.8
+      return 0.2 + rng() * 0.6 // 0.2..0.8
     case 'cowardice':
-      return 0.1 + rng() * 0.9
+      return 0.15 + rng() * 0.8 // 0.15..0.95
     case 'speciesFear':
-      return 0.1 + rng() * 0.9
+      return 0.1 + rng() * 0.8 // 0.1..0.9
     case 'conspecificFear':
-      return 0.05 + rng() * 0.7
+      return 0.05 + rng() * 0.5 // 0.05..0.55
     case 'sizeFear':
-      return 0.1 + rng() * 0.9
+      return 0.2 + rng() * 0.7 // 0.2..0.9
     case 'dependency':
-      return rng() // 0..1
+      return 0.1 + rng() * 0.8 // 0.1..0.9
     case 'independenceAge':
-      return 5 + rng() * 40 // in ticks/seconds proxy
+      return 10 + rng() * 40 // 10..50
     case 'camo':
-      return 0.1 + rng() * 0.8
+      return 0.1 + rng() * 0.6 // 0.1..0.7
     case 'awareness':
-      return 0.2 + rng() * 0.8
+      return 0.5 + rng() * 0.5 // 0.5..1
     case 'fertility':
-      return 0.2 + rng() * 0.6
+      return 0.25 + rng() * 0.55 // 0.25..0.8
     case 'gestationCost':
-      return 5 + rng() * 20
+      return 5 + rng() * 15 // 5..20
     case 'moodStability':
       return 0.2 + rng() * 0.7
     case 'stamina':
-      return 0.5 + rng() * 1.5
+      return 0.7 + rng() * 0.7 // 0.7..1.4
     case 'circadianBias':
       return -0.8 + rng() * 1.6
     case 'sleepEfficiency':
-      return 0.4 + rng() * 0.6
+      return 0.5 + rng() * 0.5 // 0.5..1
     case 'scavengerAffinity':
       return rng()
     default:

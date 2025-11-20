@@ -34,31 +34,31 @@ export function metabolismSystem(
     const hungerMultiplier = mode === MODE.Hunt ? 1.35 : mode === MODE.Flee ? 1.7 : 1
     const staminaFactor = 1 / Math.max(DNA.stamina[entity] ?? 1, 0.4)
     const burnRate =
-      DNA.metabolism[entity] * stressLoad * hungerMultiplier * dt * controls.speed * staminaFactor
+      DNA.metabolism[entity] * stressLoad * hungerMultiplier * dt * controls.speed * staminaFactor * 0.25
 
     const senseDrain =
       featureFlags.sensesFromBodyPlan && DNA.senseUpkeep[entity]
-        ? (DNA.senseUpkeep[entity] ?? 0) * dt
+        ? (DNA.senseUpkeep[entity] ?? 0) * dt * 0.25
         : 0
     let locomotionDrain = 0
     if (biome === 'water' && featureFlags.aquaticBodyPlan && profile?.water) {
-      locomotionDrain = (profile.water.thrust + profile.water.turnRate) * dt
+      locomotionDrain = (profile.water.thrust + profile.water.turnRate) * dt * 0.4
     } else if (biome === 'air' && featureFlags.aerialBodyPlan && profile?.air) {
-      locomotionDrain = (profile.air.lift + profile.air.takeoff * 0.5) * dt
+      locomotionDrain = (profile.air.lift + profile.air.takeoff * 0.5) * dt * 0.4
     }
 
     // Running / movement drain scaled by actual velocity
     const speed = Math.sqrt(Velocity.x[entity] * Velocity.x[entity] + Velocity.y[entity] * Velocity.y[entity])
     const runDrain =
-      speed * dt * (mode === MODE.Flee ? 1.2 : mode === MODE.Hunt ? 0.9 : 0.4)
+      speed * dt * (mode === MODE.Flee ? 0.35 : mode === MODE.Hunt ? 0.25 : 0.12)
 
     // Fat mass tax even while idle
     const fatRatio = Energy.fatCapacity[entity] > 0 ? Energy.fatStore[entity] / Energy.fatCapacity[entity] : 0
-    const massPenalty = fatRatio * (genome?.bodyMass ?? 1) * dt * 0.4
+    const massPenalty = fatRatio * (genome?.bodyMass ?? 1) * dt * 0.1
 
     // Pregnancy upkeep
     const isPregnant = ctx.pregnancies.has(id)
-    const pregnancyCost = isPregnant ? (DNA.gestationCost[entity] ?? 5) * dt * 0.6 : 0
+    const pregnancyCost = isPregnant ? (DNA.gestationCost[entity] ?? 5) * dt * 0.3 : 0
 
     Energy.value[entity] -= burnRate + senseDrain + locomotionDrain + runDrain + massPenalty + pregnancyCost
     if (Energy.value[entity] < 0 && Energy.fatStore[entity] > 0) {
