@@ -19,6 +19,7 @@ import type {
   Archetype,
   ControlState,
   DNA as DNAState,
+  Biome,
   Vector2,
   PlantDNA,
   PlantState,
@@ -38,6 +39,20 @@ import {
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now())
 
+const HUNTER_COLORS = [
+  '#ff2f00', '#ff5e00', '#ff8b00', '#ffb000', '#ff3b3b',
+  '#ff6b6b', '#ff8fa3', '#ff4f64', '#ff5d94', '#ff7b5f',
+  '#ff914d', '#ff9f1c', '#ff7a00', '#ff5f3c', '#ff6f52',
+  '#ff3d2e', '#ff785a', '#ff584f', '#ff6c3a', '#ff4e1a',
+]
+
+const PREY_COLORS = [
+  '#1c9eff', '#3bb0ff', '#5cc2ff', '#7cd4ff', '#9ee5ff',
+  '#2299c9', '#38bdf8', '#22d3ee', '#0ea5e9', '#0891b2',
+  '#0ea3b0', '#1fbccf', '#4dd0e1', '#6bd8f2', '#8ddcf7',
+  '#7ea5ff', '#6690f5', '#4f83ff', '#3a6bff', '#3b82f6',
+]
+
 function createContext(config: WorldConfig): SimulationContext {
   const world = createWorld()
   const rng = mulberry32(config.rngSeed)
@@ -47,6 +62,7 @@ function createContext(config: WorldConfig): SimulationContext {
     registry,
     config,
     tick: 0,
+    nextRainMs: randRange(rng, 20_000, 300_000),
     rng,
     agents: new Map(),
     plants: new Map(),
@@ -138,14 +154,13 @@ function spawnInitialPopulation(ctx: SimulationContext) {
       y: center.y + Math.sin(angle) * radius * 3,
     }
   })
-  const familyColors = ['#f97316', '#fb923c', '#22d3ee', '#38bdf8', '#a855f7', '#c084fc']
-
   archetypeSlots.forEach((archetype, idx) => {
     const count = perCluster + (idx < remainder ? 1 : 0)
     const clusterCenter = clusterCenters[idx]
-    const color = familyColors[idx % familyColors.length]
+    const colorPool = archetype === 'hunter' ? HUNTER_COLORS : PREY_COLORS
+    const color = colorPool[idx % colorPool.length]
     for (let i = 0; i < count; i++) {
-      const dna = { ...buildDNA(ctx, archetype), familyColor: color }
+      const dna = { ...buildDNA(ctx, archetype), familyColor: colorPool[(idx + i) % colorPool.length] }
       spawnAgent(ctx, archetype, dna, jitter(ctx.rng, clusterCenter, radius * 0.8))
     }
   })
@@ -202,7 +217,7 @@ export function stepWorld(ctx: SimulationContext, dtMs: number, controls: Contro
       dt,
     ),
   )
-  measure('population', () => enforcePopulationTargets(ctx, controls))
+  measure('population', () => enforcePopulationTargets(ctx, controls, dtMs))
 
   ctx.tick++
   return timings
@@ -306,21 +321,57 @@ function expireAgents(ctx: SimulationContext, ids: number[]) {
   ids.forEach((id) => removeAgent(ctx, id))
 }
 
-function enforcePopulationTargets(ctx: SimulationContext, controls: ControlState) {
-  const deficit = controls.maxAgents - ctx.agents.size
-  if (deficit > 0) {
-    for (let i = 0; i < deficit; i++) {
-      const archetype = ctx.rng() > 0.35 ? 'prey' : 'hunter'
-      const entity = spawnAgent(ctx, archetype)
-      DNA.mutationRate[entity] = controls.mutationRate
+function enforcePopulationTargets(ctx: SimulationContext, controls: ControlState, dtMs: number) {
+  let availableSlots = Math.max(0, controls.maxAgents - ctx.agents.size)
+  const archetypes: Archetype[] = ['hunter', 'prey']
+  const biomes: Biome[] = ['land', 'air', 'water']
+
+  const counts = new Map<string, number>()
+  biomes.forEach((biome) =>
+    archetypes.forEach((archetype) => {
+      counts.set(`${biome}:${archetype}`, 0)
+    }),
+  )
+
+  ctx.genomes.forEach((dna) => {
+    if (dna.archetype !== 'hunter' && dna.archetype !== 'prey') return
+    const key = `${dna.biome}:${dna.archetype}`
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  })
+
+  for (const biome of biomes) {
+    for (const archetype of archetypes) {
+      if (availableSlots <= 0) break
+      const key = `${biome}:${archetype}`
+      if ((counts.get(key) ?? 0) === 0) {
+        const toSpawn = Math.min(45, availableSlots)
+        for (let i = 0; i < toSpawn; i++) {
+          const dna = buildDNA(ctx, archetype, biome)
+          const entity = spawnAgent(ctx, archetype, dna)
+          DNA.mutationRate[entity] = controls.mutationRate
+        }
+        availableSlots -= toSpawn
+      }
     }
   }
 
-  const plantDeficit = controls.maxPlants - ctx.plants.size
-  if (plantDeficit > 0) {
-    for (let i = 0; i < plantDeficit; i++) {
-      spawnPlant(ctx)
+  handleRainyGrowth(ctx, controls, dtMs)
+}
+
+function rainIntervalMs(ctx: SimulationContext) {
+  return randRange(ctx.rng, 20_000, 300_000)
+}
+
+function handleRainyGrowth(ctx: SimulationContext, controls: ControlState, dtMs: number) {
+  ctx.nextRainMs -= dtMs
+  while (ctx.nextRainMs <= 0) {
+    const plantDeficit = controls.maxPlants - ctx.plants.size
+    if (plantDeficit > 0) {
+      for (let i = 0; i < plantDeficit; i++) {
+        spawnPlant(ctx)
+      }
     }
+    ctx.nextRainMs += rainIntervalMs(ctx)
   }
 }
 
@@ -349,21 +400,22 @@ function removeAgent(ctx: SimulationContext, id: number) {
   ctx.metrics.deaths++
 }
 
-function buildDNA(ctx: SimulationContext, archetype: Archetype): DNAState {
+function buildDNA(ctx: SimulationContext, archetype: Archetype, biome: Biome = 'land'): DNAState {
   const speedBase = archetype === 'hunter' ? randRange(ctx.rng, 320, 420) : randRange(ctx.rng, 180, 260)
   const vision = archetype === 'hunter' ? randRange(ctx.rng, 260, 360) : randRange(ctx.rng, 180, 280)
   const hungerThreshold = archetype === 'hunter' ? randRange(ctx.rng, 60, 90) : randRange(ctx.rng, 40, 70)
-  const biome = 'land'
   const bodyPlan = createBaseBodyPlan(archetype, biome)
 
   return {
     archetype,
     biome,
-    familyColor: archetype === 'hunter' ? '#f97316' : '#22d3ee',
+    familyColor: archetype === 'hunter'
+      ? HUNTER_COLORS[Math.floor(ctx.rng() * HUNTER_COLORS.length)]
+      : PREY_COLORS[Math.floor(ctx.rng() * PREY_COLORS.length)],
     baseSpeed: speedBase,
     visionRange: vision,
     hungerThreshold,
-    fatCapacity: randRange(ctx.rng, 120, 200),
+    fatCapacity: randRange(ctx.rng, 120, 2000),
     fatBurnThreshold: randRange(ctx.rng, 40, 70),
     patrolThreshold: randRange(ctx.rng, 0.4, 0.9) * hungerThreshold,
     aggression: randRange(ctx.rng, archetype === 'hunter' ? 0.6 : 0.2, archetype === 'hunter' ? 1 : 0.6),
@@ -379,7 +431,7 @@ function buildDNA(ctx: SimulationContext, archetype: Archetype): DNAState {
     libidoThreshold: randRange(ctx.rng, 0.4, 0.8),
     libidoGainRate: randRange(ctx.rng, 0.01, 0.05),
     mutationRate: ctx.config.timeStepMs / 1000 / 100,
-    bodyMass: randRange(ctx.rng, archetype === 'hunter' ? 1.2 : 0.8, archetype === 'hunter' ? 2 : 1.4),
+    bodyMass: randRange(ctx.rng, archetype === 'hunter' ? 1.2 : 0.8, archetype === 'hunter' ? 20 : 14),
     metabolism: randRange(ctx.rng, 6, 12),
     turnRate: randRange(ctx.rng, 1, 3),
     curiosity: randRange(ctx.rng, 0.3, 0.9),

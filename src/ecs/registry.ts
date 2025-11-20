@@ -316,7 +316,7 @@ function composeSnapshotDNA(entity: number): DNAState {
     libidoThreshold: Reproduction.libidoThreshold[entity] || 0.6,
     libidoGainRate: clamp(fertility * 0.4, 0.01, 0.2),
     mutationRate,
-    bodyMass: clamp(fatCapacity / 120, 0.5, 2),
+    bodyMass: clamp(fatCapacity / 120, 0.5, 20),
     metabolism,
     turnRate: clamp(curiosity * 2, 0.3, 3),
     curiosity,

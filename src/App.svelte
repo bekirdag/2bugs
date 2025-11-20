@@ -14,6 +14,9 @@
   import { biomeMutationTally, mutationEvents, type MutationEvent } from '@/state/mutationStore'
   import type { GeneKey } from '@/ecs/genetics'
 
+  const SIDEBAR_WIDTH = 340
+  const LAYOUT_GAP = 1
+
   const formatNumber = (value: number, digits = 0) => value.toFixed(digits)
   const geneLabels: Record<string, string> = {
     speed: 'Speed',
@@ -235,7 +238,7 @@ $: pixiStage.setLightweightVisuals?.(controls.lightweightVisuals)
     saveName = ''
     selectedFamily = ''
     agentQuery = ''
-    updateControls({ maxAgents: 800, maxPlants: 16000 })
+    updateControls({ maxAgents: 1080, maxPlants: 900 })
   }
 
   const handleZoomIn = () => {
@@ -267,7 +270,7 @@ $: pixiStage.setLightweightVisuals?.(controls.lightweightVisuals)
   }
 </script>
 
-<main class="layout">
+<main class="layout" style={`--sidebar-width: ${SIDEBAR_WIDTH}px; --layout-gap: ${LAYOUT_GAP}px;`}>
   <section class="viewport">
     <div id="sim-canvas" aria-label="Simulation viewport"></div>
     <div class="hud">

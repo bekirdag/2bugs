@@ -69,8 +69,8 @@ function handlePredation(
     fear
 
   if (hunterRoll >= preyRoll) {
-    const energyGain = Math.max(Energy.value[preyEntity] * 0.6, 10)
-    const fatGain = Math.max(Energy.fatStore[preyEntity] * 0.5, 5)
+    const energyGain = Math.max(Energy.value[preyEntity] * 1.2, 60)
+    const fatGain = Math.max(Energy.fatStore[preyEntity] * 0.8, 40)
     ctx.lootSites.push({
       x: Position.x[preyEntity],
       y: Position.y[preyEntity],
@@ -110,14 +110,14 @@ function handleGrazing(ctx: SimulationContext, preyEntity: number, plantId: numb
   const bite = 0.5
   PlantStats.biomass[plantEntity] -= bite
   PlantStats.moisture[plantEntity] = Math.max(0, PlantStats.moisture[plantEntity] - bite * 0.35)
-  const energyGain = bite * PlantStats.nutrientDensity[plantEntity] * 40
+  const energyGain = bite * PlantStats.nutrientDensity[plantEntity] * 120
   Energy.value[preyEntity] += energyGain
   ModeState.mode[preyEntity] = MODE.Graze
   ModeState.targetType[preyEntity] = 0
   ModeState.targetId[preyEntity] = 0
   Energy.fatStore[preyEntity] = Math.min(
     Energy.fatCapacity[preyEntity],
-    Energy.fatStore[preyEntity] + energyGain * 0.25,
+    Energy.fatStore[preyEntity] + energyGain * 0.4,
   )
 
   if (PlantStats.biomass[plantEntity] <= 0.1) {

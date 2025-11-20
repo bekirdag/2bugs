@@ -123,7 +123,7 @@ export function randomGeneValue(gene: GeneKey, rng: () => number): number {
     case 'mutationRate':
       return 0.005 + rng() * 0.03
     case 'bodyMass':
-      return 0.6 + rng() * 1.4
+      return 0.6 + rng() * 19.4
     case 'metabolism':
       return 4 + rng() * 8
     case 'turnRate':

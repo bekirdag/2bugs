@@ -88,7 +88,13 @@ export class PixiStage {
   #cameraScale = 1
   #minZoom = 0.05
   #maxZoom = 3
+  #baseMaxZoom = 3
   #gridVisible = false
+  #pendingFit = false
+  #pendingFocusAgent: number | null = null
+  #pendingFocusFamily: string | null = null
+  #isReady = false
+  #activePointerId: number | null = null
 
   // Interaction state
   #isPanning = false
@@ -107,7 +113,7 @@ export class PixiStage {
       preference: 'webgpu',
       powerPreference: 'high-performance',
       autoDensity: true,
-      resolution: Math.min(0.75, window.devicePixelRatio || 1),
+      resolution: window.devicePixelRatio || 1,
     })
     this.#renderer = this.#app.renderer
 
@@ -127,6 +133,8 @@ export class PixiStage {
     this.#createTextures()
     this.fitToScreen()
     this.#bindInteractions()
+    this.#isReady = true
+    this.#applyPendingUiActions()
     
     // Start loop
     this.#app.ticker.add((ticker) => this.#animate(ticker.deltaTime))
@@ -156,11 +164,15 @@ export class PixiStage {
     if (this.#miniMapOverlay.visible) {
       this.#renderDebugOverlay()
     }
+
+    this.#applyPendingFocus()
   }
 
   setWorldBounds(bounds: Vector2) {
     this.#worldBounds = { x: bounds.x, y: bounds.y }
     this.#buildGrid()
+    this.#refreshZoomLimits()
+    this.#updateCamera()
   }
 
   // --- Optimization: Robust Texture Generation ---
@@ -557,7 +569,7 @@ export class PixiStage {
           entry = {
             sprite,
             swayPhase: Math.random() * Math.PI * 2,
-            swaySpeed: 0,
+            swaySpeed: 0.5 + Math.random() * 0.8,
             active: true
           }
         }
@@ -597,6 +609,10 @@ export class PixiStage {
   // ... rest of helper methods ...
 
   fitToScreen() {
+    if (!this.#isReady) {
+      this.#pendingFit = true
+      return
+    }
     if (!this.#renderer || !this.#host) return
     const { clientWidth, clientHeight } = this.#host
     const width = Math.max(1, clientWidth)
@@ -607,7 +623,8 @@ export class PixiStage {
     const scaleX = width / safeWorldWidth
     const scaleY = height / safeWorldHeight
     const rawScale = Math.min(scaleX, scaleY)
-    
+
+    this.#refreshZoomLimits()
     this.#cameraScale = clamp(rawScale, this.#minZoom, this.#maxZoom)
     this.#updateCamera()
   }
@@ -617,6 +634,7 @@ export class PixiStage {
   
   setGridVisible(visible: boolean) {
     this.#gridVisible = visible
+    if (!this.#isReady) return
     this.#gridLayer.visible = visible
     if (visible) this.#buildGrid()
   }
@@ -653,6 +671,14 @@ export class PixiStage {
       entry.glow.alpha = 0.35 + (Math.sin(entry.pulsePhase * 1.1) + 1) * 0.25
       entry.overlay.alpha = 0.45 + (Math.sin(entry.pulsePhase * 0.9) + 1) * 0.3
     }
+
+    for (const entry of this.#plantSprites.values()) {
+      if (!entry.active || !entry.sprite.visible) continue
+      entry.swayPhase += dt * 0.03 * (0.6 + entry.swaySpeed)
+      const sway = Math.sin(entry.swayPhase) * 0.06
+      entry.sprite.rotation = sway
+      entry.sprite.scale.y = 0.98 + Math.abs(Math.sin(entry.swayPhase * 0.7)) * 0.04
+    }
   }
 
   #randomPlantTexture() {
@@ -666,8 +692,9 @@ export class PixiStage {
   #bindInteractions() {
     if (!this.#app) return
     const canvas = this.#app.canvas
+    canvas.style.touchAction = 'none'
     canvas.addEventListener('wheel', this.#handleWheel, { passive: false })
-    canvas.addEventListener('pointerdown', this.#handlePointerDown)
+    canvas.addEventListener('pointerdown', this.#handlePointerDown, { passive: false })
     window.addEventListener('pointermove', this.#handlePointerMove)
     window.addEventListener('pointerup', this.#handlePointerUp)
     window.addEventListener('resize', () => this.fitToScreen())
@@ -681,12 +708,16 @@ export class PixiStage {
   }
 
   #handlePointerDown = (event: PointerEvent) => {
+    event.preventDefault()
+    this.#activePointerId = event.pointerId
+    this.#app?.canvas.setPointerCapture(event.pointerId)
     this.#isPanning = true
     this.#lastPointer = { x: event.clientX, y: event.clientY }
   }
 
   #handlePointerMove = (event: PointerEvent) => {
     if (!this.#isPanning || !this.#lastPointer) return
+    if (this.#activePointerId !== null && event.pointerId !== this.#activePointerId) return
     const dx = event.clientX - this.#lastPointer.x
     const dy = event.clientY - this.#lastPointer.y
     this.#camera.position.x += dx
@@ -697,6 +728,10 @@ export class PixiStage {
 
   #handlePointerUp = () => {
     this.#isPanning = false
+    if (this.#activePointerId !== null) {
+      this.#app?.canvas.releasePointerCapture(this.#activePointerId)
+    }
+    this.#activePointerId = null
     this.#lastPointer = null
     this.#clampCamera()
   }
@@ -867,6 +902,35 @@ export class PixiStage {
     this.#clampCamera()
   }
 
+  #refreshZoomLimits() {
+    // Allow generous zoom-out; we'll center small worlds in the clamp logic instead of blocking zoom
+    this.#minZoom = 0.04
+    this.#maxZoom = Math.max(this.#baseMaxZoom, this.#minZoom)
+    this.#cameraScale = clamp(this.#cameraScale, this.#minZoom, this.#maxZoom)
+  }
+
+  #applyPendingFocus() {
+    if (!this.#lastSnapshot) return
+    if (this.#pendingFocusAgent !== null) {
+      const target = this.#pendingFocusAgent
+      this.#pendingFocusAgent = null
+      this.focusOnAgent(target)
+    } else if (this.#pendingFocusFamily) {
+      const color = this.#pendingFocusFamily
+      this.#pendingFocusFamily = null
+      this.focusOnFamily(color)
+    }
+  }
+
+  #applyPendingUiActions() {
+    this.setGridVisible(this.#gridVisible)
+    if (this.#pendingFit) {
+      this.#pendingFit = false
+      this.fitToScreen()
+    }
+    this.#applyPendingFocus()
+  }
+
   #countVisibleAgents(snapshot: SimulationSnapshot) {
     if (!this.#app) return 0
     const viewPadding = 100
@@ -908,13 +972,27 @@ export class PixiStage {
     const worldWidth = this.#worldBounds.x * this.#cameraScale
     const worldHeight = this.#worldBounds.y * this.#cameraScale
     
-    // Allow panning slightly past edges
-    const buffer = 100 * this.#cameraScale 
-    const minX = Math.min(0, width - worldWidth) - buffer
-    const minY = Math.min(0, height - worldHeight) - buffer
+    const buffer = 100 * this.#cameraScale
 
-    this.#camera.position.x = clamp(this.#camera.position.x, minX, buffer)
-    this.#camera.position.y = clamp(this.#camera.position.y, minY, buffer)
+    if (worldWidth <= width) {
+      // World narrower than viewport: center it, allow a tiny nudge
+      const centerX = (width - worldWidth) / 2
+      this.#camera.position.x = clamp(this.#camera.position.x, centerX - buffer * 0.25, centerX + buffer * 0.25)
+    } else {
+      // Allow panning slightly past edges
+      const minX = width - worldWidth - buffer
+      const maxX = buffer
+      this.#camera.position.x = clamp(this.#camera.position.x, minX, maxX)
+    }
+
+    if (worldHeight <= height) {
+      const centerY = (height - worldHeight) / 2
+      this.#camera.position.y = clamp(this.#camera.position.y, centerY - buffer * 0.25, centerY + buffer * 0.25)
+    } else {
+      const minY = height - worldHeight - buffer
+      const maxY = buffer
+      this.#camera.position.y = clamp(this.#camera.position.y, minY, maxY)
+    }
   }
   
   #renderDebugOverlay() {
@@ -951,6 +1029,11 @@ export class PixiStage {
   }
   
   focusOnFamily(color: string) {
+    if (!color) return
+    if (!this.#isReady || !this.#lastSnapshot) {
+      this.#pendingFocusFamily = color
+      return
+    }
     if (!this.#lastSnapshot) return
     const members = this.#lastSnapshot.agents.filter((agent) => agent.dna.familyColor === color)
     if (!members.length) return
@@ -968,6 +1051,10 @@ export class PixiStage {
   }
 
   focusOnAgent(agentId: number) {
+    if (!this.#isReady) {
+      this.#pendingFocusAgent = agentId
+      return
+    }
     let target: { x: number; y: number } | null = null
     const sprite = this.#agentSprites.get(agentId)
     if (sprite) {

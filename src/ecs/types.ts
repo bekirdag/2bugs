@@ -23,6 +23,7 @@ export interface SimulationContext {
   registry: EntityRegistry
   config: WorldConfig
   tick: number
+  nextRainMs: number
   rng: RNG
   agents: Map<number, number>
   plants: Map<number, number>

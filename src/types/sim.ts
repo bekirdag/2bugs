@@ -278,9 +278,9 @@ export interface ControlState {
 }
 
 export const DEFAULT_WORLD_CONFIG: WorldConfig = {
-  bounds: { x: 192000, y: 192000 },
-  maxAgents: 800,
-  maxPlants: 16000,
+  bounds: { x: 17280, y: 17280 },
+  maxAgents: 1080,
+  maxPlants: 900,
   timeStepMs: 50,
   spatialHashCellSize: 64,
   rngSeed: Date.now(),
@@ -290,8 +290,8 @@ export const DEFAULT_WORLD_CONFIG: WorldConfig = {
 export const DEFAULT_CONTROLS: ControlState = {
   speed: 1,
   paused: false,
-  maxAgents: 800,
-  maxPlants: 16000,
+  maxAgents: 1080,
+  maxPlants: 900,
   mutationRate: 0.01,
   flockingStrength: 1,
   curiosityBias: 0,

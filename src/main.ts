@@ -13,7 +13,7 @@ import { DEFAULT_WORLD_CONFIG, type WorldConfig, type SimulationSnapshot } from 
 import { telemetryStore } from '@/state/telemetryStore'
 import { recordMutations, resetMutations } from '@/state/mutationStore'
 
-const WORLD_SCALE = 100
+const WORLD_SCALE = 9
 
 import SimulationWorker from './worker?worker'
 
