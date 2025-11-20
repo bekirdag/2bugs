@@ -7,10 +7,13 @@ const MODE = {
   Graze: 2,
   Patrol: 6,
   Sleep: 1,
+  Flee: 4,
 }
 
 export function grazingSystem(ctx: SimulationContext, curiosityBias = 0) {
   ctx.agents.forEach((entity, id) => {
+    const mode = ModeState.mode[entity]
+    if (mode === MODE.Sleep || mode === MODE.Flee) return
     const archetype = AgentMeta.archetype[entity]
     const curiosity = (DNA.curiosity[entity] ?? 0.3) + curiosityBias
     const eatsPlants =

@@ -9,7 +9,14 @@ import {
   type Renderer,
 } from 'pixi.js'
 
-import type { AgentState, PlantState, SimulationSnapshot, Vector2 } from '@/types/sim'
+import type {
+  AgentState,
+  MoodKind,
+  MoodTier,
+  PlantState,
+  SimulationSnapshot,
+  Vector2,
+} from '@/types/sim'
 import type { CreaturePatternStyle } from '@/types/creatureDesign'
 import { CREATURE_DESIGN_DEFAULT } from '@/config/creatureDesignDefaults'
 import { VARIANT_PROFILE, computeDimensions, buildPalette, type CreatureDimensions } from '@/render/creatureLook'
@@ -49,6 +56,28 @@ const MODE_COLORS: Record<string, number> = {
   idle: 0x94a3b8,
 }
 
+const MOOD_COLORS: Record<MoodKind, number> = {
+  panic: 0xef4444,
+  starving: 0xf59e0b,
+  foraging: 0xfbbf24,
+  exhausted: 0x9ca3af,
+  'seeking-mate': 0xec4899,
+  bonding: 0x22c55e,
+  exploring: 0x38bdf8,
+  idle: 0xcbd5e1,
+}
+
+const TIER_COLORS: Record<MoodTier, number> = {
+  survival: 0xb91c1c,
+  physiological: 0xf97316,
+  reproductive: 0xdb2777,
+  social: 0x10b981,
+  growth: 0x0284c7,
+}
+
+const DEBUG_FLEE_COLOR = 0xff4dd8
+const PINK_MASK = 0xff4dd8
+
 const CREATURE_TEXTURE_SCALE = 0.18
 
 export class PixiStage {
@@ -74,6 +103,7 @@ export class PixiStage {
   #pendingHighlight: number | null = null
   #autoCentered = false
   #lightweightVisuals = false
+  #debugMoodOverlay = false
 
   #agentTextures: Record<'hunter' | 'prey', { base: Texture; accent: Texture; glow: Texture; overlay: Texture }> | null =
     null
@@ -458,10 +488,18 @@ export class PixiStage {
       entry.container.scale.set(scale)
       entry.container.rotation = agent.heading
 
-      entry.base.tint = parseColor(agent.dna.familyColor)
-      entry.accent.tint = this.#accentTints[archetype]
-      entry.glow.tint = this.#glowTints[archetype]
-      entry.overlay.tint = this.#modeColor(agent)
+      const fleeing = agent.mode === 'flee' && this.#debugMoodOverlay
+      if (fleeing) {
+        entry.base.tint = PINK_MASK
+        entry.accent.tint = PINK_MASK
+        entry.glow.tint = PINK_MASK
+        entry.overlay.tint = PINK_MASK
+      } else {
+        entry.base.tint = parseColor(agent.dna.familyColor)
+        entry.accent.tint = this.#accentTints[archetype]
+        entry.glow.tint = this.#glowTints[archetype]
+        entry.overlay.tint = this.#modeColor(agent)
+      }
       this.#updateLimbOverlay(entry, agent)
       this.#updateFinOverlay(entry, agent)
       this.#updateWingOverlay(entry, agent)
@@ -641,6 +679,7 @@ export class PixiStage {
 
   setDebugOverlay(enabled: boolean) {
     this.#miniMapOverlay.visible = enabled
+    this.#debugMoodOverlay = enabled
     // Force a render update for the overlay immediately
     if (this.#lastSnapshot) this.#renderDebugOverlay()
   }
@@ -686,6 +725,12 @@ export class PixiStage {
   }
 
   #modeColor(agent: AgentState) {
+    if (this.#debugMoodOverlay) {
+      const fleeing = agent.mode === 'flee'
+      if (fleeing) return DEBUG_FLEE_COLOR
+      const kind = (agent.mood?.kind as MoodKind | undefined) ?? 'idle'
+      return MOOD_COLORS[kind] ?? MODE_COLORS[agent.mode] ?? MODE_COLORS.sleep
+    }
     return MODE_COLORS[agent.mode] ?? MODE_COLORS.sleep
   }
 
@@ -1007,7 +1052,9 @@ export class PixiStage {
     // Simple dots for minimap
     if (this.#lastSnapshot.agents.length < 1000) {
         this.#lastSnapshot.agents.forEach(a => {
-             overlay.circle(a.position.x, a.position.y, 2).fill(this.#modeColor(a))
+             const moodColor = this.#modeColor(a)
+             const tierColor = TIER_COLORS[(a.mood?.tier as MoodTier) ?? 'growth'] ?? 0x475569
+             overlay.circle(a.position.x, a.position.y, 2).fill(moodColor).stroke({ width: 1, color: tierColor, alpha: 0.9 })
         })
     }
   }

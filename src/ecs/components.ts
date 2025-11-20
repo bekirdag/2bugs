@@ -73,6 +73,9 @@ export const Mood = defineComponent({
   focus: Types.f32,
   social: Types.f32,
   fatigue: Types.f32,
+  state: Types.ui8,
+  tier: Types.ui8,
+  intensity: Types.f32,
 })
 
 export const ModeState = defineComponent({

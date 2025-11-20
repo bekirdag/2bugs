@@ -6,6 +6,7 @@ const MODE = {
   Graze: 2,
   Hunt: 3,
   Mate: 5,
+  Fight: 7,
 } as const
 
 export interface InteractionHooks {
@@ -32,71 +33,112 @@ export function interactionSystem(ctx: SimulationContext, hooks: InteractionHook
     const gap = Math.sqrt(dx * dx + dy * dy)
     if (gap > CONTACT_DISTANCE) return
 
-    if (ModeState.mode[entity] === MODE.Hunt && targetType === 1) {
-      handlePredation(ctx, entity, targetId, hooks, aggressionBias)
+    if ((ModeState.mode[entity] === MODE.Hunt || ModeState.mode[entity] === MODE.Fight) && targetType === 1) {
+      handleDuel(ctx, entity, id, targetId, hooks, aggressionBias)
     } else if (ModeState.mode[entity] === MODE.Graze && targetType === 2) {
       handleGrazing(ctx, entity, targetId, hooks)
     }
   })
 }
 
-function handlePredation(
+function handleDuel(
   ctx: SimulationContext,
-  hunterEntity: number,
-  preyId: number,
+  attackerEntity: number,
+  attackerId: number,
+  defenderId: number,
   hooks: InteractionHooks,
   aggressionBias: number,
 ) {
-  const preyEntity = ctx.agents.get(preyId)
-  if (preyEntity === undefined) {
-    ModeState.targetType[hunterEntity] = 0
-    ModeState.targetId[hunterEntity] = 0
+  const defenderEntity = ctx.agents.get(defenderId)
+  if (defenderEntity === undefined) {
+    ModeState.targetType[attackerEntity] = 0
+    ModeState.targetId[attackerEntity] = 0
     return
   }
 
-  const aggressionGene = (DNA.aggression[hunterEntity] ?? 0.5) + aggressionBias
-  const aggression = Math.max(0.5, aggressionGene * 0.5 + 1)
-  const stamina = Math.max(0.8, DNA.stamina ? DNA.stamina[hunterEntity] ?? 1 : 1)
-  const fear = (DNA.fear[preyEntity] ?? 0.3) * 0.5 + 0.8
-  const hunterRoll =
-    (DNA.baseSpeed[hunterEntity] + Energy.value[hunterEntity] * 0.8) *
-    (0.8 + ctx.rng() * 0.4) *
-    aggression *
-    stamina
-  const preyRoll =
-    (DNA.baseSpeed[preyEntity] + Energy.value[preyEntity] * 0.5) *
-    (0.8 + ctx.rng() * 0.4) *
-    fear
+  const attackerGenome = ctx.genomes.get(attackerId)
+  const defenderGenome = ctx.genomes.get(defenderId)
 
-  if (hunterRoll >= preyRoll) {
-    const energyGain = Math.max(Energy.value[preyEntity] * 1.2, 60)
-    const fatGain = Math.max(Energy.fatStore[preyEntity] * 0.8, 40)
+  // Decide initiative: higher aggression + power gets first strike
+  const attackerInit =
+    (DNA.aggression[attackerEntity] ?? 0.5) * 0.6 +
+    ((attackerGenome?.power ?? 50) / 200) +
+    ctx.rng() * 0.4 +
+    aggressionBias * 0.5
+  const defenderInit =
+    (DNA.aggression[defenderEntity] ?? 0.4) * 0.6 +
+    ((defenderGenome?.power ?? 40) / 220) +
+    ctx.rng() * 0.4
+
+  const first = attackerInit >= defenderInit ? attackerEntity : defenderEntity
+  const second = first === attackerEntity ? defenderEntity : attackerEntity
+
+  let winner = first
+  let loser = second
+
+  for (let i = 0; i < 4; i++) {
+    const ended = resolveStrike(ctx, winner, loser, attackerGenome, defenderGenome)
+    if (ended) break
+    ;[winner, loser] = [loser, winner]
+  }
+
+  if (Energy.value[loser] <= 0 && Energy.fatStore[loser] <= 0) {
+    // Winner gains spoils if carnivore
+    const winnerId = AgentMeta.id[winner]
+    const loserId = AgentMeta.id[loser]
+    const energyGain = Math.max(Energy.value[loser] * 1.2, 40)
+    const fatGain = Math.max(Energy.fatStore[loser] * 0.8, 20)
     ctx.lootSites.push({
-      x: Position.x[preyEntity],
-      y: Position.y[preyEntity],
+      x: Position.x[loser],
+      y: Position.y[loser],
       nutrients: energyGain * 0.5 + fatGain,
       decay: 8,
     })
-    Energy.value[hunterEntity] += energyGain
-    Energy.fatStore[hunterEntity] = Math.min(
-      Energy.fatCapacity[hunterEntity],
-      Energy.fatStore[hunterEntity] + fatGain,
-    )
-    ModeState.mode[hunterEntity] = MODE.Graze
-    ModeState.targetType[hunterEntity] = 0
-    ModeState.targetId[hunterEntity] = 0
-
-    hooks.removeAgent(preyId)
+    Energy.value[winner] += energyGain
+    Energy.fatStore[winner] = Math.min(Energy.fatCapacity[winner], Energy.fatStore[winner] + fatGain)
+    hooks.removeAgent(loserId)
+    ModeState.mode[winner] = MODE.Graze
+    ModeState.targetType[winner] = 0
+    ModeState.targetId[winner] = 0
   } else {
-    const backlash = hunterRoll * 0.12 * aggression
-    Energy.value[hunterEntity] -= backlash
-    ModeState.mode[hunterEntity] = MODE.Graze
-    ModeState.targetType[hunterEntity] = 0
-    ModeState.targetId[hunterEntity] = 0
-    if (Energy.value[hunterEntity] <= 0) {
-      hooks.removeAgent(AgentMeta.id[hunterEntity])
-    }
+    ModeState.mode[winner] = MODE.Graze
+    ModeState.targetType[winner] = 0
+    ModeState.targetId[winner] = 0
   }
+}
+
+function resolveStrike(
+  ctx: SimulationContext,
+  attacker: number,
+  defender: number,
+  attackerGenome?: any,
+  defenderGenome?: any,
+): boolean {
+  const powerGene = attackerGenome?.power ?? 50
+  const defenceGene = defenderGenome?.defence ?? 40
+  const staminaGene = attackerGenome?.stamina ?? DNA.stamina?.[attacker] ?? 1
+  const aggression = DNA.aggression[attacker] ?? 0.5
+  const power = Math.max(0.6, powerGene / 80)
+  const defence = Math.max(0.2, defenceGene / 120)
+  const stamina = Math.max(0.6, staminaGene)
+  const hit = power * (1 + aggression * 0.6) * (0.8 + ctx.rng() * 0.6) * (0.9 + stamina * 0.2)
+  const damage = hit * (1 - defence * 0.45)
+
+  // Apply to energy first, then fat reserve as buffer
+  const energyBefore = Energy.value[defender]
+  const fatBefore = Energy.fatStore[defender]
+  const combined = energyBefore + fatBefore
+  const remaining = combined - damage
+  if (remaining <= 0) {
+    Energy.value[defender] = 0
+    Energy.fatStore[defender] = 0
+    return true
+  }
+  Energy.value[defender] = Math.max(0, energyBefore - damage)
+  if (Energy.value[defender] === 0) {
+    Energy.fatStore[defender] = Math.max(0, fatBefore - (damage - energyBefore))
+  }
+  return false
 }
 
 function handleGrazing(ctx: SimulationContext, preyEntity: number, plantId: number, hooks: InteractionHooks) {

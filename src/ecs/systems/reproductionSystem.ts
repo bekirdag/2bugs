@@ -88,10 +88,6 @@ export function reproductionSystem(
       const dx = Position.x[entity] - Position.x[mateEntity]
       const dy = Position.y[entity] - Position.y[mateEntity]
       if (Math.sqrt(dx * dx + dy * dy) > 28) continue
-      const genomeA = ctx.genomes.get(id) ?? extractDNA(ctx, entity)
-      const genomeB = ctx.genomes.get(bucket.id) ?? extractDNA(ctx, mateEntity)
-      if (genomeSimilarity(genomeA, genomeB) < 0.9) continue
-
       paired.add(id)
       paired.add(bucket.id)
 

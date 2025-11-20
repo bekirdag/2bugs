@@ -23,6 +23,7 @@ export function metabolismSystem(
 
   ctx.agents.forEach((entity, id) => {
     const mode = ModeState.mode[entity]
+    const behaviorLocked = mode === MODE.Flee || mode === MODE.Mate
     const genome = ctx.genomes.get(id)
     let profile = ctx.locomotion.get(id)
     if (!profile && genome) {
@@ -75,15 +76,15 @@ export function metabolismSystem(
     const hunger = Energy.value[entity] < Energy.metabolism[entity] * 8 + Energy.sleepDebt[entity]
     const wantsRest = Energy.value[entity] > Energy.metabolism[entity] * 12
 
-    if (hunger) {
+    if (hunger && !behaviorLocked) {
       ModeState.mode[entity] = MODE.Hunt
       Mood.focus[entity] = clamp(Mood.focus[entity] + 0.4 * dt, 0, 1)
       Mood.stress[entity] = clamp(Mood.stress[entity] + 0.35 * dt)
-    } else if (mode === MODE.Hunt && wantsRest) {
+    } else if (mode === MODE.Hunt && wantsRest && !behaviorLocked) {
       ModeState.mode[entity] = MODE.Sleep
       Mood.stress[entity] = clamp(Mood.stress[entity] - 0.5 * dt)
       Mood.focus[entity] = clamp(Mood.focus[entity] - 0.2 * dt)
-    } else if (!hunger && mode !== MODE.Flee) {
+    } else if (!hunger && mode !== MODE.Flee && !behaviorLocked) {
       ModeState.mode[entity] = MODE.Patrol
       Mood.focus[entity] = clamp(Mood.focus[entity] - 0.1 * dt)
     }

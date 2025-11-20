@@ -11,7 +11,10 @@ const MODE = {
   Hunt: 3,
   Flee: 4,
   Patrol: 6,
+  Fight: 7,
 } as const
+
+const FIGHT_HOLD_RADIUS = 20
 
 export function movementSystem(
   ctx: SimulationContext,
@@ -25,8 +28,16 @@ export function movementSystem(
   ctx.agents.forEach((entity, id) => {
     const mode = ModeState.mode[entity]
     const resting = mode === MODE.Sleep
+    const targetPosSnapshot = resolveTargetPosition(ctx, entity)
+    const distanceToTarget =
+      targetPosSnapshot &&
+      Math.sqrt(
+        (targetPosSnapshot.x - Position.x[entity]) * (targetPosSnapshot.x - Position.x[entity]) +
+          (targetPosSnapshot.y - Position.y[entity]) * (targetPosSnapshot.y - Position.y[entity]),
+      )
+    const holdPosition = mode === MODE.Fight && distanceToTarget !== null && distanceToTarget !== undefined && distanceToTarget <= FIGHT_HOLD_RADIUS
 
-    let targetPosition = !resting ? resolveTargetPosition(ctx, entity) : null
+    let targetPosition = !resting ? targetPosSnapshot : null
 
     const genome = ctx.genomes.get(id)
     const biome = genome?.biome ?? 'land'
@@ -89,7 +100,9 @@ export function movementSystem(
             ? 0.8
             : mode === MODE.Patrol
               ? 1.05
-              : 1
+              : mode === MODE.Fight
+                ? 0.4
+                : 1
     const fatPenalty = 1 / (1 + Energy.fatStore[entity] / Math.max(Energy.fatCapacity[entity], 1))
     let locomotionBonus = 1
     if (biome === 'land' && landStats) {
@@ -103,10 +116,12 @@ export function movementSystem(
 
     if (resting) {
       targetSpeed = 0
+    } else if (holdPosition) {
+      targetSpeed = 0
     } else {
       const metabolismNeed = Math.max(Energy.metabolism[entity], 1)
       const energyRatio = clamp(Energy.value[entity] / (metabolismNeed * 2), 0, 1)
-      const conserving = energyRatio < 0.4 && mode !== MODE.Flee
+      const conserving = energyRatio < 0.4 && mode !== MODE.Flee && !holdPosition
       if (conserving) {
         // Exponential drop keeps hungry agents mostly still while never fully freezing in danger.
         targetSpeed *= energyRatio * energyRatio

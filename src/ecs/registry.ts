@@ -16,6 +16,7 @@ import {
   Velocity,
   ArchetypeCode,
 } from './components'
+import { decodeMoodKind, decodeMoodTier, encodeMoodKind, encodeMoodTier } from './mood/moodCatalog'
 
 import type { AgentState, PlantState, DNA as DNAState } from '@/types/sim'
 import { clamp } from '@/utils/math'
@@ -105,7 +106,10 @@ export function hydrateAgentEntity(entity: number, state: AgentState) {
   Mood.stress[entity] = state.mood.stress
   Mood.focus[entity] = state.mood.focus
   Mood.social[entity] = state.mood.social
-  Mood.fatigue[entity] = 0
+  Mood.fatigue[entity] = state.mood.fatigue ?? 0
+  Mood.state[entity] = encodeMoodKind(state.mood.kind)
+  Mood.tier[entity] = encodeMoodTier(state.mood.tier)
+  Mood.intensity[entity] = state.mood.intensity ?? 0
   ModeState.mode[entity] = encodeMode(state.mode)
   ModeState.targetType[entity] = state.target ? encodeTarget(state.target.kind) : 0
   ModeState.targetId[entity] = state.target?.id ?? 0
@@ -147,6 +151,10 @@ export function serializeAgentEntity(entity: number, genomeOverride?: DNAState):
       stress: Mood.stress[entity],
       focus: Mood.focus[entity],
       social: Mood.social[entity],
+      fatigue: Mood.fatigue[entity],
+      kind: decodeMoodKind(Mood.state[entity]),
+      tier: decodeMoodTier(Mood.tier[entity]),
+      intensity: Mood.intensity[entity],
     },
     escapeCooldown: ModeState.dangerTimer[entity],
     gestationTimer: ModeState.gestationTimer[entity],

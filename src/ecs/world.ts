@@ -170,7 +170,7 @@ function spawnInitialPopulation(ctx: SimulationContext) {
         ...buildDNA(ctx, archetype, biome),
         familyColor: colorPool[(idx + i) % colorPool.length],
       }
-      spawnAgent(ctx, archetype, dna, jitter(ctx.rng, clusterCenter, radius * 0.8))
+      spawnAgent(ctx, archetype, dna, jitter(ctx.rng, clusterCenter, radius * 0.8), 0, undefined, false)
     }
   })
 
@@ -221,6 +221,7 @@ export function stepWorld(ctx: SimulationContext, dtMs: number, controls: Contro
             position,
             options?.mutationMask ?? 0,
             options?.parentId,
+            true,
           ),
       },
       dt,
@@ -257,6 +258,7 @@ function spawnAgent(
   positionOverride?: Vector2,
   mutationMask = 0,
   parentId?: number,
+  countBirth = true,
 ) {
   const dna = prepareDNA(dnaOverride ?? buildDNA(ctx, archetype))
   const id = ctx.nextAgentId++
@@ -273,7 +275,7 @@ function spawnAgent(
     fatStore: dna.fatCapacity * 0.8,
     age: 0,
     mode: 'patrol',
-    mood: { stress: 0.25, focus: 0.5, social: 0.5 },
+    mood: { stress: 0.25, focus: 0.5, social: 0.5, fatigue: 0, kind: 'idle', tier: 'growth', intensity: 0 },
     escapeCooldown: 0,
     gestationTimer: 0,
     injuries: 0,
@@ -290,7 +292,9 @@ function spawnAgent(
   })
   ctx.locomotion.set(id, deriveMovementProfile(dna.bodyPlan, dna.archetype, dna.biome))
   ctx.agentIndex.set({ x: Position.x[entity], y: Position.y[entity] }, { id, data: id })
-  ctx.metrics.births++
+  if (countBirth) {
+    ctx.metrics.births++
+  }
   ctx.birthTick.set(id, ctx.tick)
   if (parentId !== undefined) {
     ctx.parentMap.set(id, parentId)
@@ -356,7 +360,7 @@ function enforcePopulationTargets(ctx: SimulationContext, controls: ControlState
         const toSpawn = Math.min(45, availableSlots)
         for (let i = 0; i < toSpawn; i++) {
           const dna = buildDNA(ctx, archetype, biome)
-          const entity = spawnAgent(ctx, archetype, dna)
+          const entity = spawnAgent(ctx, archetype, dna, undefined, 0, undefined, false)
           DNA.mutationRate[entity] = controls.mutationRate
         }
         availableSlots -= toSpawn

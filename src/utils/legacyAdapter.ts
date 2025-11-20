@@ -33,7 +33,8 @@ export function legacyPhpToSnapshot(raw: string, config?: WorldConfig): Simulati
     agents,
     plants: [],
     stats: {
-      totalBirths: agents.length,
+      // Treat legacy imports as a starting population; natural births will accrue after load.
+      totalBirths: 0,
       totalDeaths: 0,
       mutations: 0,
       averageFitness: 0,
@@ -85,6 +86,10 @@ function normalizeLegacyCreature(id: string, creature: LegacyCreature): AgentSta
     height: Number(creature.height ?? (type === 'hunter' ? 20 : 10)),
     radius: Number(creature.r ?? 10),
   }
+  const parseOr = (value: unknown, fallback: number) => {
+    const num = Number(value)
+    return Number.isFinite(num) ? num : fallback
+  }
 
   const biome: Biome = 'land'
   const dna: DNA = {
@@ -131,8 +136,8 @@ function normalizeLegacyCreature(id: string, creature: LegacyCreature): AgentSta
     speciesFear: clamp(Number(creature.danger_distance ?? 40) / 200, 0.1, 1),
     conspecificFear: clamp(Number(creature.escape_rate ?? 50) / 200, 0.05, 0.8),
     sizeFear: clamp(Number(creature.escape_rate ?? 50) / 120, 0.1, 1),
-    dependency: clamp(Number(creature.khudz) ?? 0.5, 0, 1), // fallback key, default mid
-    independenceAge: clamp(Number(creature.ageout ?? 20), 5, 60),
+    dependency: clamp(parseOr(creature.khudz, 0.5), 0, 1), // fallback key, default mid
+    independenceAge: clamp(parseOr(creature.ageout, 20), 5, 60),
     bodyPlanVersion: BODY_PLAN_VERSION,
     bodyPlan: createBaseBodyPlan(type, biome),
   }
@@ -153,6 +158,10 @@ function normalizeLegacyCreature(id: string, creature: LegacyCreature): AgentSta
       stress: clamp(Number(creature.stress ?? 20) / 100, 0, 1),
       focus: clamp(Number(creature.focus ?? 50) / 100, 0, 1),
       social: clamp(Number(creature.social ?? 50) / 100, 0, 1),
+      fatigue: 0,
+      kind: 'idle',
+      tier: 'growth',
+      intensity: 0,
     },
     target: null,
     escapeCooldown: escapeTimer,

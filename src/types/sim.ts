@@ -179,10 +179,26 @@ export type AgentMode =
   | 'digest'
   | 'recover'
 
+export type MoodTier = 'survival' | 'physiological' | 'reproductive' | 'social' | 'growth'
+
+export type MoodKind =
+  | 'panic'
+  | 'starving'
+  | 'foraging'
+  | 'exhausted'
+  | 'seeking-mate'
+  | 'bonding'
+  | 'exploring'
+  | 'idle'
+
 export interface MoodState {
   stress: number
   focus: number
   social: number
+  fatigue?: number
+  kind?: MoodKind
+  tier?: MoodTier
+  intensity?: number
 }
 
 export interface AgentState {
