@@ -37,6 +37,12 @@ export interface DNA {
   curiosity: number
   cohesion: number
   fear: number
+  cowardice: number
+  speciesFear: number
+  conspecificFear: number
+  sizeFear: number
+  dependency: number
+  independenceAge: number
   camo: number
   awareness: number
   fertility: number
@@ -115,6 +121,30 @@ export interface BodyPlanGenes {
   senses: SenseGene[]
   limbs: LimbGene[]
   appendages: AppendageGene[]
+}
+
+export interface LandLocomotionStats {
+  strideLength: number
+  legCount: number
+  agility: number
+}
+
+export interface SwimLocomotionStats {
+  thrust: number
+  turnRate: number
+  drift: number
+}
+
+export interface FlightLocomotionStats {
+  lift: number
+  glide: number
+  takeoff: number
+}
+
+export interface MovementProfile {
+  land?: LandLocomotionStats
+  water?: SwimLocomotionStats
+  air?: FlightLocomotionStats
 }
 
 export interface LegacyAgentLinks {
@@ -244,12 +274,13 @@ export interface ControlState {
   curiosityBias: number
   aggressionBias: number
   debugOverlay: boolean
+  lightweightVisuals: boolean
 }
 
 export const DEFAULT_WORLD_CONFIG: WorldConfig = {
-  bounds: { x: 1920, y: 1080 },
-  maxAgents: 120,
-  maxPlants: 240,
+  bounds: { x: 192000, y: 192000 },
+  maxAgents: 800,
+  maxPlants: 16000,
   timeStepMs: 50,
   spatialHashCellSize: 64,
   rngSeed: Date.now(),
@@ -259,13 +290,14 @@ export const DEFAULT_WORLD_CONFIG: WorldConfig = {
 export const DEFAULT_CONTROLS: ControlState = {
   speed: 1,
   paused: false,
-  maxAgents: 80,
-  maxPlants: 160,
+  maxAgents: 800,
+  maxPlants: 16000,
   mutationRate: 0.01,
   flockingStrength: 1,
   curiosityBias: 0,
   aggressionBias: 0,
   debugOverlay: false,
+  lightweightVisuals: false,
 }
 
 export interface ModeLegendEntry {

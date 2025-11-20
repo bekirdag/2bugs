@@ -697,7 +697,7 @@
     width: 100%;
   }
 
-  .palette-section .color-grid {
+  .color-grid {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 0.5rem;

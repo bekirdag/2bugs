@@ -84,6 +84,11 @@ export function hydrateAgentEntity(entity: number, state: AgentState) {
   DNA.fertility[entity] = state.dna.fertility ?? 0.4
   DNA.mutationRate[entity] = state.dna.mutationRate ?? 0.01
   DNA.metabolism[entity] = state.dna.metabolism ?? 8
+  DNA.cowardice[entity] = state.dna.cowardice ?? state.dna.fear ?? 0.3
+  DNA.speciesFear[entity] = state.dna.speciesFear ?? state.dna.fear ?? 0.3
+  DNA.conspecificFear[entity] = state.dna.conspecificFear ?? 0.25
+  DNA.sizeFear[entity] = state.dna.sizeFear ?? 0.5
+  DNA.gestationCost[entity] = state.dna.gestationCost ?? 0
   DNA.stamina[entity] = state.dna.stamina ?? 1
   DNA.circadianBias[entity] = state.dna.circadianBias ?? 0
   DNA.sleepEfficiency[entity] = state.dna.sleepEfficiency ?? 0.8
@@ -113,17 +118,14 @@ export function hydrateAgentEntity(entity: number, state: AgentState) {
   GenomeFlags.mutationMask[entity] = state.mutationMask ?? 0
 }
 
-export function serializeAgentEntity(
-  entity: number,
-  genomeOverride?: Pick<DNAState, 'biome' | 'bodyPlanVersion' | 'bodyPlan'>,
-): AgentState {
-  const dnaState = composeSnapshotDNA(entity)
+export function serializeAgentEntity(entity: number, genomeOverride?: DNAState): AgentState {
+  let dnaState = composeSnapshotDNA(entity)
   if (genomeOverride) {
-    dnaState.biome = genomeOverride.biome ?? dnaState.biome
-    dnaState.bodyPlanVersion = genomeOverride.bodyPlanVersion ?? dnaState.bodyPlanVersion
-    dnaState.bodyPlan = genomeOverride.bodyPlan
-      ? cloneBodyPlan(genomeOverride.bodyPlan)
-      : dnaState.bodyPlan
+    dnaState = {
+      ...dnaState,
+      ...genomeOverride,
+      bodyPlan: cloneBodyPlan(genomeOverride.bodyPlan),
+    }
   }
   return {
     id: AgentMeta.id[entity],
@@ -284,6 +286,12 @@ function composeSnapshotDNA(entity: number): DNAState {
   const fatCapacity = Energy.fatCapacity[entity] || 100
   const metabolism = Energy.metabolism[entity] || 8
   const vision = DNA.visionRange[entity] || 200
+  const cowardice = DNA.cowardice[entity] ?? DNA.fear[entity] ?? 0.3
+  const speciesFear = DNA.speciesFear[entity] ?? fear
+  const conspecificFear = DNA.conspecificFear[entity] ?? 0.25
+  const sizeFear = DNA.sizeFear[entity] ?? 0.5
+  const dependency = DNA.dependency[entity] ?? 0.5
+  const independenceAge = DNA.independenceAge[entity] ?? 20
 
   return {
     archetype,
@@ -314,6 +322,12 @@ function composeSnapshotDNA(entity: number): DNAState {
     curiosity,
     cohesion: DNA.socialDrive[entity] ?? 0.3,
     fear,
+    cowardice,
+    speciesFear,
+    conspecificFear,
+    sizeFear,
+    dependency,
+    independenceAge,
     camo: DNA.camo[entity] ?? 0.3,
     awareness: DNA.awareness[entity] ?? clamp(vision / 360, 0.2, 1),
     fertility: DNA.fertility[entity] ?? fertility,

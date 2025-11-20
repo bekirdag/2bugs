@@ -7,10 +7,13 @@ import { pixiStage } from '@/render/pixiStage'
 import { controlStore } from '@/state/controlStore'
 import { recordSnapshot } from '@/state/historyStore'
 import { latestSnapshot } from '@/state/simStore'
-import { attachWorker, handleSnapshotFromWorker } from '@/state/simController'
+import { attachWorker, handleSnapshotFromWorker, rememberWorldConfig } from '@/state/simController'
 import type { MainToWorkerMessage, WorkerToMainMessage } from '@/types/messages'
 import { DEFAULT_WORLD_CONFIG, type WorldConfig, type SimulationSnapshot } from '@/types/sim'
 import { telemetryStore } from '@/state/telemetryStore'
+import { recordMutations, resetMutations } from '@/state/mutationStore'
+
+const WORLD_SCALE = 100
 
 import SimulationWorker from './worker?worker'
 
@@ -45,6 +48,7 @@ function initSimulation() {
         window.__latestSnapshot = message.payload
       }
       latestSnapshot.set(message.payload)
+      recordMutations(message.payload)
       if (rendererReady) {
         applySnapshotToStage(message.payload)
       } else {
@@ -82,6 +86,8 @@ function initSimulation() {
       bounds: safeBounds,
       rngSeed: Date.now(),
     }
+    rememberWorldConfig(worldConfig)
+    resetMutations()
     worker.postMessage({ type: 'init', payload: worldConfig } satisfies MainToWorkerMessage)
 
     if (pendingSnapshot) {
@@ -93,9 +99,11 @@ function initSimulation() {
   function measureHostBounds(host: HTMLElement) {
     const measuredWidth = host.clientWidth
     const measuredHeight = host.clientHeight
+    const base = Math.max(measuredWidth, measuredHeight)
+    const scaled = base > 0 ? Math.max(1, base * WORLD_SCALE) : DEFAULT_WORLD_CONFIG.bounds.x
     return {
-      x: measuredWidth > 0 ? measuredWidth : DEFAULT_WORLD_CONFIG.bounds.x,
-      y: measuredHeight > 0 ? measuredHeight : DEFAULT_WORLD_CONFIG.bounds.y,
+      x: scaled,
+      y: scaled,
     }
   }
 

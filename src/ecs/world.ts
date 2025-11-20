@@ -18,7 +18,7 @@ import type {
   AgentState,
   Archetype,
   ControlState,
-  DNA,
+  DNA as DNAState,
   Vector2,
   PlantDNA,
   PlantState,
@@ -27,8 +27,14 @@ import type {
 } from '@/types/sim'
 import { SNAPSHOT_VERSION } from '@/types/sim'
 import { SpatialHash } from '@/utils/spatialHash'
-import { mulberry32, randItem, randRange } from '@/utils/rand'
-import { BODY_PLAN_VERSION, cloneBodyPlan, createBaseBodyPlan, prepareDNA } from '@/ecs/bodyPlan'
+import { mulberry32, randItem, randRange, jitter } from '@/utils/rand'
+import {
+  BODY_PLAN_VERSION,
+  cloneBodyPlan,
+  createBaseBodyPlan,
+  deriveMovementProfile,
+  prepareDNA,
+} from '@/ecs/bodyPlan'
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now())
 
@@ -45,6 +51,10 @@ function createContext(config: WorldConfig): SimulationContext {
     agents: new Map(),
     plants: new Map(),
     genomes: new Map(),
+    locomotion: new Map(),
+    pregnancies: new Map(),
+    birthTick: new Map(),
+    parentMap: new Map(),
     agentIndex: new SpatialHash<number>(config.spatialHashCellSize),
     plantIndex: new SpatialHash<number>(config.spatialHashCellSize),
     nextAgentId: 1,
@@ -74,6 +84,10 @@ export function createWorldFromSnapshot(snapshot: SimulationSnapshot): Simulatio
   ctx.agents.clear()
   ctx.plants.clear()
   ctx.genomes.clear()
+  ctx.locomotion.clear()
+  ctx.pregnancies.clear()
+  ctx.birthTick.clear()
+  ctx.parentMap.clear()
   ctx.nextAgentId = 1
   ctx.nextPlantId = 1
 
@@ -85,6 +99,11 @@ export function createWorldFromSnapshot(snapshot: SimulationSnapshot): Simulatio
       ...preparedDNA,
       bodyPlan: cloneBodyPlan(preparedDNA.bodyPlan),
     })
+    ctx.locomotion.set(
+      agent.id,
+      deriveMovementProfile(preparedDNA.bodyPlan, preparedDNA.archetype, preparedDNA.biome),
+    )
+    ctx.birthTick.set(agent.id, snapshot.tick)
     ctx.agentIndex.set({ x: Position.x[entity], y: Position.y[entity] }, { id: agent.id, data: agent.id })
   })
   snapshot.plants.forEach((plant) => {
@@ -105,17 +124,33 @@ export function createWorldFromSnapshot(snapshot: SimulationSnapshot): Simulatio
 }
 
 function spawnInitialPopulation(ctx: SimulationContext) {
-  const hunters = Math.max(6, Math.floor(ctx.config.maxAgents * 0.35))
-  const prey = Math.max(10, ctx.config.maxAgents - hunters)
-  const plants = ctx.config.maxPlants
+  const totalAgents = ctx.config.maxAgents
+  const archetypeSlots: Archetype[] = ['hunter', 'hunter', 'prey', 'prey', 'scavenger', 'scavenger']
+  const clusterCount = archetypeSlots.length
+  const perCluster = Math.floor(totalAgents / clusterCount)
+  const remainder = totalAgents % clusterCount
+  const radius = Math.min(ctx.config.bounds.x, ctx.config.bounds.y) * 0.02
+  const center = { x: ctx.config.bounds.x / 2, y: ctx.config.bounds.y / 2 }
+  const clusterCenters = Array.from({ length: clusterCount }).map((_, idx) => {
+    const angle = (Math.PI * 2 * idx) / clusterCount
+    return {
+      x: center.x + Math.cos(angle) * radius * 3,
+      y: center.y + Math.sin(angle) * radius * 3,
+    }
+  })
+  const familyColors = ['#f97316', '#fb923c', '#22d3ee', '#38bdf8', '#a855f7', '#c084fc']
 
-  for (let i = 0; i < hunters; i++) {
-    spawnAgent(ctx, 'hunter')
-  }
-  for (let i = 0; i < prey; i++) {
-    spawnAgent(ctx, 'prey')
-  }
-  for (let i = 0; i < plants; i++) {
+  archetypeSlots.forEach((archetype, idx) => {
+    const count = perCluster + (idx < remainder ? 1 : 0)
+    const clusterCenter = clusterCenters[idx]
+    const color = familyColors[idx % familyColors.length]
+    for (let i = 0; i < count; i++) {
+      const dna = { ...buildDNA(ctx, archetype), familyColor: color }
+      spawnAgent(ctx, archetype, dna, jitter(ctx.rng, clusterCenter, radius * 0.8))
+    }
+  })
+
+  for (let i = 0; i < ctx.config.maxPlants; i++) {
     spawnPlant(ctx)
   }
 }
@@ -155,7 +190,14 @@ export function stepWorld(ctx: SimulationContext, dtMs: number, controls: Contro
       controls,
       {
         spawnOffspring: (dna, position, options) =>
-          spawnAgent(ctx, dna.archetype, dna, position, options?.mutationMask ?? 0),
+          spawnAgent(
+            ctx,
+            dna.archetype,
+            dna,
+            position,
+            options?.mutationMask ?? 0,
+            options?.parentId,
+          ),
       },
       dt,
     ),
@@ -187,9 +229,10 @@ export function snapshotWorld(ctx: SimulationContext): SimulationSnapshot {
 function spawnAgent(
   ctx: SimulationContext,
   archetype: Archetype,
-  dnaOverride?: DNA,
+  dnaOverride?: DNAState,
   positionOverride?: Vector2,
   mutationMask = 0,
+  parentId?: number,
 ) {
   const dna = prepareDNA(dnaOverride ?? buildDNA(ctx, archetype))
   const id = ctx.nextAgentId++
@@ -202,8 +245,8 @@ function spawnAgent(
     },
     velocity: { x: 0, y: 0 },
     heading: randRange(ctx.rng, 0, Math.PI * 2),
-    energy: dna.hungerThreshold * 1.2,
-    fatStore: dna.fatCapacity * 0.4,
+    energy: dna.hungerThreshold * 12,
+    fatStore: dna.fatCapacity * 0.8,
     age: 0,
     mode: 'patrol',
     mood: { stress: 0.25, focus: 0.5, social: 0.5 },
@@ -221,8 +264,13 @@ function spawnAgent(
     ...dna,
     bodyPlan: cloneBodyPlan(dna.bodyPlan),
   })
+  ctx.locomotion.set(id, deriveMovementProfile(dna.bodyPlan, dna.archetype, dna.biome))
   ctx.agentIndex.set({ x: Position.x[entity], y: Position.y[entity] }, { id, data: id })
   ctx.metrics.births++
+  ctx.birthTick.set(id, ctx.tick)
+  if (parentId !== undefined) {
+    ctx.parentMap.set(id, parentId)
+  }
   return entity
 }
 
@@ -292,10 +340,16 @@ function removeAgent(ctx: SimulationContext, id: number) {
   ctx.agents.delete(id)
   ctx.agentIndex.delete(id)
   ctx.genomes.delete(id)
+  ctx.locomotion.delete(id)
+  ctx.locomotion.delete(id)
+  ctx.birthTick.delete(id)
+  ctx.parentMap.forEach((parent, childId) => {
+    if (parent === id) ctx.parentMap.delete(childId)
+  })
   ctx.metrics.deaths++
 }
 
-function buildDNA(ctx: SimulationContext, archetype: Archetype): DNA {
+function buildDNA(ctx: SimulationContext, archetype: Archetype): DNAState {
   const speedBase = archetype === 'hunter' ? randRange(ctx.rng, 320, 420) : randRange(ctx.rng, 180, 260)
   const vision = archetype === 'hunter' ? randRange(ctx.rng, 260, 360) : randRange(ctx.rng, 180, 280)
   const hungerThreshold = archetype === 'hunter' ? randRange(ctx.rng, 60, 90) : randRange(ctx.rng, 40, 70)
@@ -331,22 +385,24 @@ function buildDNA(ctx: SimulationContext, archetype: Archetype): DNA {
     curiosity: randRange(ctx.rng, 0.3, 0.9),
     cohesion: randRange(ctx.rng, 0.2, 0.8),
     fear: randRange(ctx.rng, 0.2, 0.8),
+    speciesFear: archetype === 'hunter' ? randRange(ctx.rng, 0.1, 0.5) : randRange(ctx.rng, 0.4, 0.9),
+    conspecificFear:
+      archetype === 'hunter' ? randRange(ctx.rng, 0.05, 0.35) : randRange(ctx.rng, 0.2, 0.55),
+    sizeFear: randRange(ctx.rng, 0.2, 0.9),
+    dependency: randRange(ctx.rng, 0.1, 0.9),
+    independenceAge: randRange(ctx.rng, 10, 50),
     camo: randRange(ctx.rng, 0.1, 0.7),
     awareness: randRange(ctx.rng, 0.5, 1),
+    cowardice: archetype === 'hunter' ? randRange(ctx.rng, 0.15, 0.55) : randRange(ctx.rng, 0.35, 0.9),
     fertility: randRange(ctx.rng, 0.25, 0.8),
     gestationCost: randRange(ctx.rng, 5, 20),
     moodStability: randRange(ctx.rng, 0.2, 0.9),
-    preferredFood:
-      archetype === 'hunter'
-        ? ['prey']
-        : randRange(ctx.rng, 0, 1) > 0.8
-          ? ['plant', 'scavenger']
-          : ['plant'],
+    preferredFood: archetype === 'hunter' ? ['prey'] : ['plant'],
     stamina: randRange(ctx.rng, 0.7, 1.4),
     circadianBias:
       archetype === 'hunter' ? randRange(ctx.rng, 0.2, 0.8) : randRange(ctx.rng, -0.8, 0.4),
     sleepEfficiency: randRange(ctx.rng, 0.5, 1),
-    scavengerAffinity: randRange(ctx.rng, archetype === 'hunter' ? 0.1 : 0, archetype === 'hunter' ? 0.6 : 0.4),
+    scavengerAffinity: archetype === 'hunter' || archetype === 'prey' ? 0 : randRange(ctx.rng, 0.2, 0.6),
     senseUpkeep: 0,
     bodyPlanVersion: BODY_PLAN_VERSION,
     bodyPlan,

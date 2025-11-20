@@ -2,7 +2,7 @@
   import { get } from 'svelte/store'
   import { controlStore, togglePause, updateControls } from '@/state/controlStore'
   import { deleteSnapshot, renameSnapshot, saveStatusStore, snapshotsStore } from '@/state/persistence'
-  import { loadSnapshotById, loadSnapshotDirect, requestWorldSave } from '@/state/simController'
+  import { loadSnapshotById, loadSnapshotDirect, requestWorldSave, resetWorld } from '@/state/simController'
   import { latestSnapshot, simStats } from '@/state/simStore'
   import { pixiStage } from '@/render/pixiStage'
   import TraitTrends from '@/lib/TraitTrends.svelte'
@@ -11,6 +11,8 @@
   import { MODE_LEGEND, type SavedSnapshot } from '@/types/sim'
   import { telemetryStore } from '@/state/telemetryStore'
   import type { TelemetryData } from '@/state/telemetryStore'
+  import { biomeMutationTally, mutationEvents, type MutationEvent } from '@/state/mutationStore'
+  import type { GeneKey } from '@/ecs/genetics'
 
   const formatNumber = (value: number, digits = 0) => value.toFixed(digits)
   const geneLabels: Record<string, string> = {
@@ -20,6 +22,49 @@
     stamina: 'Stamina',
     scavenger: 'Scavenger',
     metabolism: 'Metabolism',
+    awareness: 'Awareness',
+  }
+  const mutationGeneLabels: Record<GeneKey, string> = {
+    baseSpeed: 'Speed',
+    visionRange: 'Vision',
+    hungerThreshold: 'Hunger threshold',
+    fatCapacity: 'Fat capacity',
+    fatBurnThreshold: 'Burn threshold',
+    patrolThreshold: 'Patrol threshold',
+    aggression: 'Aggression',
+    bravery: 'Bravery',
+    power: 'Power',
+    defence: 'Defence',
+    fightPersistence: 'Fight persistence',
+    escapeTendency: 'Escape tendency',
+    escapeDuration: 'Escape duration',
+    lingerRate: 'Linger rate',
+    dangerRadius: 'Danger radius',
+    attentionSpan: 'Attention span',
+    libidoThreshold: 'Libido threshold',
+    libidoGainRate: 'Libido gain rate',
+    mutationRate: 'Mutation rate',
+    bodyMass: 'Body mass',
+    metabolism: 'Metabolism',
+    turnRate: 'Turn rate',
+    curiosity: 'Curiosity',
+    cohesion: 'Cohesion',
+    fear: 'Fear',
+    camo: 'Camouflage',
+    awareness: 'Awareness',
+    fertility: 'Fertility',
+    gestationCost: 'Gestation cost',
+    moodStability: 'Mood stability',
+    cowardice: 'Cowardice',
+    speciesFear: 'Other species fear',
+    conspecificFear: 'Conspecific fear',
+    dependency: 'Dependency',
+    independenceAge: 'Independence age',
+    sizeFear: 'Size fear',
+    stamina: 'Stamina',
+    circadianBias: 'Circadian bias',
+    sleepEfficiency: 'Sleep efficiency',
+    scavengerAffinity: 'Scavenger affinity',
   }
 
   let snapshots: SavedSnapshot[] = []
@@ -29,6 +74,10 @@
   let selectedFamily = ''
   let agentQuery = ''
   let telemetry: TelemetryData | null = null
+  let fps = 0
+  let mutationFeed: MutationEvent[] = []
+  let mutationCounts: Record<string, number> = {}
+  let bodyPlanMutationCount = 0
   let legacyStatus: { state: 'idle' | 'success' | 'error'; message: string } = {
     state: 'idle',
     message: '',
@@ -42,13 +91,18 @@
   $: hunters = snapshot ? snapshot.agents.filter((agent) => agent.dna.archetype === 'hunter').length : 0
   $: prey = snapshot ? snapshot.agents.filter((agent) => agent.dna.archetype === 'prey').length : 0
   $: notableAgents = $notableAgentsStore
+  $: mutationFeed = $mutationEvents
+  $: mutationCounts = $biomeMutationTally
+  $: bodyPlanMutationCount = mutationFeed.filter((event) => event.bodyPlanChanged).length
 $: {
   const latestTelemetry = $telemetryStore
   if (latestTelemetry) {
     telemetry = latestTelemetry
+    fps = latestTelemetry.fps ?? fps
   }
 }
 $: pixiStage.setDebugOverlay?.(controls.debugOverlay)
+$: pixiStage.setLightweightVisuals?.(controls.lightweightVisuals)
   $: familyOptions =
     snapshot
       ? Object.values(
@@ -96,6 +150,12 @@ $: pixiStage.setDebugOverlay?.(controls.debugOverlay)
     const enabled = (event.currentTarget as HTMLInputElement).checked
     updateControls({ debugOverlay: enabled })
     pixiStage.setDebugOverlay(enabled)
+  }
+
+  const handleLightweightToggle = (event: Event) => {
+    const enabled = (event.currentTarget as HTMLInputElement).checked
+    updateControls({ lightweightVisuals: enabled })
+    pixiStage.setLightweightVisuals(enabled)
   }
 
   const handleSaveWorld = () => {
@@ -170,6 +230,14 @@ $: pixiStage.setDebugOverlay?.(controls.debugOverlay)
     pixiStage.fitToScreen()
   }
 
+  const handleResetWorld = () => {
+    resetWorld()
+    saveName = ''
+    selectedFamily = ''
+    agentQuery = ''
+    updateControls({ maxAgents: 800, maxPlants: 16000 })
+  }
+
   const handleZoomIn = () => {
     pixiStage.zoomIn()
   }
@@ -187,6 +255,11 @@ $: pixiStage.setDebugOverlay?.(controls.debugOverlay)
     if (selectedFamily) {
       pixiStage.focusOnFamily(selectedFamily)
     }
+  }
+
+  const handleFocusMutation = (id: number) => {
+    pixiStage.focusOnAgent(id)
+    agentQuery = String(id)
   }
 
   const openCreatureDesignLab = () => {
@@ -210,6 +283,10 @@ $: pixiStage.setDebugOverlay?.(controls.debugOverlay)
         <span class="label">Plants</span>
         <span class="value">{stats.plants}</span>
       </div>
+      <div>
+        <span class="label">FPS</span>
+        <span class="value">{fps || '—'}</span>
+      </div>
     </div>
 
   </section>
@@ -220,6 +297,7 @@ $: pixiStage.setDebugOverlay?.(controls.debugOverlay)
         <button class="ghost" on:click={togglePause}>
           {controls.paused ? 'Resume' : 'Pause'}
         </button>
+        <button class="ghost" on:click={handleResetWorld}>Reset world</button>
         <button class="ghost" type="button" on:click={openCreatureDesignLab}>Creature design</button>
       </div>
     </header>
@@ -346,9 +424,71 @@ $: pixiStage.setDebugOverlay?.(controls.debugOverlay)
               <span>{telemetry.geneAverages[key]?.toFixed(1) ?? '—'}</span>
             </div>
           {/each}
+          <div class="timing-row">
+            <span>Stride/Fins/Wings</span>
+            <span>
+              {telemetry.geneAverages.stride?.toFixed(1) ?? '—'} /
+              {telemetry.geneAverages.fins?.toFixed(1) ?? '—'} /
+              {telemetry.geneAverages.wings?.toFixed(1) ?? '—'}
+            </span>
+          </div>
         </div>
       {:else}
         <p class="muted">Telemetry warming up…</p>
+      {/if}
+    </section>
+
+    <section class="telemetry-card mutation-card">
+      <div class="mutation-header">
+        <div>
+          <h2>Recent mutations</h2>
+          <p class="muted small">Body-plan tags highlight limb/fin/wing shifts.</p>
+        </div>
+        <div class="mutation-tally">
+          <span>Land {mutationCounts.land ?? 0}</span>
+          <span>Water {mutationCounts.water ?? 0}</span>
+          <span>Air {mutationCounts.air ?? 0}</span>
+          <span class="body-plan-count">Body plan {bodyPlanMutationCount}</span>
+        </div>
+      </div>
+      {#if mutationFeed.length}
+        <ul class="mutation-feed">
+          {#each mutationFeed as event}
+            <li>
+              <button
+                class="mutation-row"
+                on:click={() => handleFocusMutation(event.id)}
+                on:keydown={(evt) => {
+                  if (evt.key === 'Enter' || evt.key === ' ') {
+                    evt.preventDefault()
+                    handleFocusMutation(event.id)
+                  }
+                }}
+              >
+                <div class="mutation-meta">
+                  <span class="pill">#{event.id}</span>
+                  <span class="pill">{event.archetype} · {event.biome}</span>
+                  <span class="pill muted">tick {event.tick}</span>
+                  {#if event.bodyPlanChanged}
+                    <span class="pill body-plan-pill">Body plan</span>
+                  {/if}
+                  <span class="color-dot" style={`background:${event.familyColor}`}></span>
+                </div>
+                <div class="mutation-genes">
+                  {#if event.genes.length}
+                    {#each event.genes as gene}
+                      <span class="pill gene-pill">{mutationGeneLabels[gene] ?? gene}</span>
+                    {/each}
+                  {:else}
+                    <span class="muted">Trait drift only</span>
+                  {/if}
+                </div>
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {:else}
+        <p class="muted">No mutations yet.</p>
       {/if}
     </section>
 
@@ -394,6 +534,10 @@ $: pixiStage.setDebugOverlay?.(controls.debugOverlay)
         <input type="checkbox" checked={controls.debugOverlay} on:change={handleDebugOverlayToggle} />
         Show debug overlay
       </label>
+      <label class="debug-toggle">
+        <input type="checkbox" checked={controls.lightweightVisuals} on:change={handleLightweightToggle} />
+        Lightweight visuals (hide limbs/fins/wings)
+      </label>
     </section>
 
     <div class="control">
@@ -412,11 +556,11 @@ $: pixiStage.setDebugOverlay?.(controls.debugOverlay)
     <div class="number-row">
       <label>
         Max agents
-        <input type="number" min="20" max="400" value={controls.maxAgents} on:input={handleMaxAgents} />
+        <input type="number" min="100" max="20000" value={controls.maxAgents} on:input={handleMaxAgents} />
       </label>
       <label>
         Max plants
-        <input type="number" min="40" max="600" value={controls.maxPlants} on:input={handleMaxPlants} />
+        <input type="number" min="100" max="40000" value={controls.maxPlants} on:input={handleMaxPlants} />
       </label>
     </div>
 

@@ -13,6 +13,7 @@ import type { AgentState, PlantState, SimulationSnapshot, Vector2 } from '@/type
 import type { CreaturePatternStyle } from '@/types/creatureDesign'
 import { CREATURE_DESIGN_DEFAULT } from '@/config/creatureDesignDefaults'
 import { VARIANT_PROFILE, computeDimensions, buildPalette, type CreatureDimensions } from '@/render/creatureLook'
+import { featureFlags } from '@/config/featureFlags'
 
 type AgentSpriteData = {
   container: Container
@@ -20,9 +21,13 @@ type AgentSpriteData = {
   accent: Sprite
   glow: Sprite
   overlay: Sprite
+  limbs: Graphics
+  fins: Graphics
+  wings: Graphics
   archetype: 'hunter' | 'prey'
   pulsePhase: number
   wobbleSpeed: number
+  highlightTimeout?: number
   active: boolean // For pooling
 }
 
@@ -66,16 +71,22 @@ export class PixiStage {
   #plantPool: PlantSpriteData[] = []
 
   #lastSnapshot: SimulationSnapshot | null = null
+  #pendingHighlight: number | null = null
+  #autoCentered = false
+  #lightweightVisuals = false
 
   #agentTextures: Record<'hunter' | 'prey', { base: Texture; accent: Texture; glow: Texture; overlay: Texture }> | null =
     null
   #accentTints: Record<'hunter' | 'prey', number> = { hunter: 0xffffff, prey: 0xffffff }
   #glowTints: Record<'hunter' | 'prey', number> = { hunter: 0xffffff, prey: 0xffffff }
   #plantTextures: Texture[] = []
+  #legTexture?: Texture
+  #finTexture?: Texture
+  #wingTexture?: Texture
 
   #worldBounds: Vector2 = { x: 1920, y: 1080 }
   #cameraScale = 1
-  #minZoom = 0.35
+  #minZoom = 0.05
   #maxZoom = 3
   #gridVisible = false
 
@@ -93,9 +104,10 @@ export class PixiStage {
       antialias: false, // Optimization: Disable MSAA for performance with many agents
       resizeTo: host,
       hello: false,
+      preference: 'webgpu',
       powerPreference: 'high-performance',
       autoDensity: true,
-      resolution: window.devicePixelRatio || 1,
+      resolution: Math.min(0.75, window.devicePixelRatio || 1),
     })
     this.#renderer = this.#app.renderer
 
@@ -130,7 +142,16 @@ export class PixiStage {
 
     this.#syncPlants(snapshot.plants)
     this.#syncAgents(snapshot.agents)
+    if (!this.#autoCentered || this.#countVisibleAgents(snapshot) === 0) {
+      this.#focusOnSnapshot(snapshot)
+      this.#autoCentered = true
+      this.#syncAgents(snapshot.agents) // re-run with new camera position
+    }
     this.#lastSnapshot = snapshot
+    if (this.#pendingHighlight !== null && this.#agentSprites.has(this.#pendingHighlight)) {
+      this.#flashAgent(this.#pendingHighlight)
+      this.#pendingHighlight = null
+    }
     
     if (this.#miniMapOverlay.visible) {
       this.#renderDebugOverlay()
@@ -143,7 +164,7 @@ export class PixiStage {
   }
 
   // --- Optimization: Robust Texture Generation ---
-  private #createTextures() {
+  #createTextures() {
     if (!this.#renderer) return
 
     // Helper to safely render a graphic to a texture in v8
@@ -207,10 +228,14 @@ export class PixiStage {
       bake(this.#buildPlantGraphics(2)),
     ]
 
+    this.#legTexture = bake(this.#buildLegOverlayGraphic())
+    this.#finTexture = bake(this.#buildFinOverlayGraphic())
+    this.#wingTexture = bake(this.#buildWingOverlayGraphic())
+
     this.#buildGrid()
   }
 
-  private #buildAgentGraphics(archetype: 'hunter' | 'prey', config = CREATURE_DESIGN_DEFAULT) {
+  #buildAgentGraphics(archetype: 'hunter' | 'prey', config = CREATURE_DESIGN_DEFAULT) {
     const base = new Graphics()
     const accent = new Graphics()
     const glow = new Graphics()
@@ -280,7 +305,7 @@ export class PixiStage {
     return { base, accent, glow, overlay }
   }
 
-  private #drawOverlayPattern(overlay: Graphics, dims: CreatureDimensions, patternStyle: CreaturePatternStyle) {
+  #drawOverlayPattern(overlay: Graphics, dims: CreatureDimensions, patternStyle: CreaturePatternStyle) {
     if (patternStyle === 'dapples') {
       const dots = 4
       for (let i = 0; i < dots; i++) {
@@ -318,7 +343,7 @@ export class PixiStage {
     }
   }
 
-  private #scaleDimensions(dims: CreatureDimensions): CreatureDimensions {
+  #scaleDimensions(dims: CreatureDimensions): CreatureDimensions {
     return {
       length: dims.length * CREATURE_TEXTURE_SCALE,
       thickness: dims.thickness * CREATURE_TEXTURE_SCALE,
@@ -330,7 +355,7 @@ export class PixiStage {
     }
   }
 
-  private #buildPlantGraphics(seed: number) {
+  #buildPlantGraphics(seed: number) {
     const g = new Graphics()
     const height = 40 + seed * 8
     g.moveTo(0, -height)
@@ -341,9 +366,29 @@ export class PixiStage {
     return g
   }
 
+  #buildLegOverlayGraphic() {
+    const g = new Graphics()
+    g.moveTo(0, 0).lineTo(0, 18).stroke({ width: 3, color: 0xffffff, alpha: 0.85 })
+    return g
+  }
+
+  #buildFinOverlayGraphic() {
+    const g = new Graphics()
+    g.moveTo(0, 0).lineTo(12, -16).lineTo(18, 0).closePath().fill({ color: 0xffffff, alpha: 0.55 })
+    return g
+  }
+
+  #buildWingOverlayGraphic() {
+    const g = new Graphics()
+    g.moveTo(0, 0).quadraticCurveTo(-16, -20, -32, -6).quadraticCurveTo(-16, -16, 0, 0)
+    g.moveTo(0, 0).quadraticCurveTo(16, -20, 32, -6).quadraticCurveTo(16, -16, 0, 0)
+    g.stroke({ width: 2, color: 0xffffff, alpha: 0.8 })
+    return g
+  }
+
   // --- Optimization: Culling & Pooling ---
 
-  private #syncAgents(agents: AgentState[]) {
+  #syncAgents(agents: AgentState[]) {
     if (!this.#agentTextures) return
 
     // 1. Mark all current sprites as inactive (don't destroy yet)
@@ -405,6 +450,9 @@ export class PixiStage {
       entry.accent.tint = this.#accentTints[archetype]
       entry.glow.tint = this.#glowTints[archetype]
       entry.overlay.tint = this.#modeColor(agent)
+      this.#updateLimbOverlay(entry, agent)
+      this.#updateFinOverlay(entry, agent)
+      this.#updateWingOverlay(entry, agent)
     }
 
     // 4. Cleanup: Return inactive sprites to pool
@@ -422,12 +470,15 @@ export class PixiStage {
     }
   }
 
-  private #createAgentSprite(archetype: 'hunter' | 'prey'): AgentSpriteData {
+  #createAgentSprite(archetype: 'hunter' | 'prey'): AgentSpriteData {
     const container = new Container()
     const base = new Sprite()
     const accent = new Sprite()
     const glow = new Sprite()
     const overlay = new Sprite()
+    const limbs = new Graphics()
+    const fins = new Graphics()
+    const wings = new Graphics()
 
     base.anchor.set(0.5)
     accent.anchor.set(0.5)
@@ -437,7 +488,7 @@ export class PixiStage {
     glow.alpha = 0.45
     accent.alpha = 0.95
 
-    container.addChild(glow, base, accent, overlay)
+    container.addChild(glow, limbs, fins, wings, base, accent, overlay)
 
     const entry: AgentSpriteData = {
       container,
@@ -445,6 +496,9 @@ export class PixiStage {
       accent,
       glow,
       overlay,
+      limbs,
+      fins,
+      wings,
       archetype,
       pulsePhase: Math.random() * Math.PI * 2,
       wobbleSpeed: 0.5 + Math.random() * 0.8,
@@ -454,7 +508,7 @@ export class PixiStage {
     return entry
   }
 
-  private #configureAgentSprite(entry: AgentSpriteData, archetype: 'hunter' | 'prey') {
+  #configureAgentSprite(entry: AgentSpriteData, archetype: 'hunter' | 'prey') {
     if (!this.#agentTextures) return
     const textures = this.#agentTextures[archetype]
     entry.base.texture = textures.base
@@ -464,9 +518,15 @@ export class PixiStage {
     entry.accent.tint = this.#accentTints[archetype]
     entry.glow.tint = this.#glowTints[archetype]
     entry.archetype = archetype
+    entry.limbs.clear()
+    entry.limbs.visible = !this.#lightweightVisuals
+    entry.fins.clear()
+    entry.fins.visible = !this.#lightweightVisuals
+    entry.wings.clear()
+    entry.wings.visible = !this.#lightweightVisuals
   }
 
-  private #syncPlants(plants: PlantState[]) {
+  #syncPlants(plants: PlantState[]) {
     if (!this.#plantTextures.length) return
 
     // Mark inactive
@@ -491,12 +551,13 @@ export class PixiStage {
         } else {
           const sprite = new Sprite(this.#randomPlantTexture())
           sprite.anchor.set(0.5, 1)
-          sprite.alpha = 0.85
+          sprite.alpha = 0.8
+          sprite.eventMode = 'none'
           this.#plantLayer.addChild(sprite)
           entry = {
             sprite,
             swayPhase: Math.random() * Math.PI * 2,
-            swaySpeed: 0.4 + Math.random() * 0.3,
+            swaySpeed: 0,
             active: true
           }
         }
@@ -566,9 +627,19 @@ export class PixiStage {
     if (this.#lastSnapshot) this.#renderDebugOverlay()
   }
 
+  setLightweightVisuals(enabled: boolean) {
+    this.#lightweightVisuals = enabled
+    // Hide existing overlays immediately
+    this.#agentSprites.forEach((entry) => {
+      entry.limbs.visible = !enabled
+      entry.fins.visible = !enabled
+      entry.wings.visible = !enabled
+    })
+  }
+
   // ... Interactions & Camera Logic (Standard) ...
   
-  private #animate(dt: number) {
+  #animate(dt: number) {
     // Only animate what is visible
     // PixiJS's visible check is fast, but we can skip logic too
     
@@ -582,24 +653,17 @@ export class PixiStage {
       entry.glow.alpha = 0.35 + (Math.sin(entry.pulsePhase * 1.1) + 1) * 0.25
       entry.overlay.alpha = 0.45 + (Math.sin(entry.pulsePhase * 0.9) + 1) * 0.3
     }
-
-    for (const entry of this.#plantSprites.values()) {
-      if (!entry.sprite.visible) continue; 
-
-      entry.swayPhase += entry.swaySpeed * dt * 0.05
-      entry.sprite.rotation = Math.sin(entry.swayPhase) * 0.15
-    }
   }
 
-  private #randomPlantTexture() {
+  #randomPlantTexture() {
     return this.#plantTextures[Math.floor(Math.random() * this.#plantTextures.length)]
   }
 
-  private #modeColor(agent: AgentState) {
+  #modeColor(agent: AgentState) {
     return MODE_COLORS[agent.mode] ?? MODE_COLORS.sleep
   }
 
-  private #bindInteractions() {
+  #bindInteractions() {
     if (!this.#app) return
     const canvas = this.#app.canvas
     canvas.addEventListener('wheel', this.#handleWheel, { passive: false })
@@ -609,19 +673,19 @@ export class PixiStage {
     window.addEventListener('resize', () => this.fitToScreen())
   }
 
-  private #handleWheel = (event: WheelEvent) => {
+  #handleWheel = (event: WheelEvent) => {
     event.preventDefault()
     const zoomFactor = event.deltaY < 0 ? 1.1 : 0.9
     const target = { x: event.offsetX, y: event.offsetY }
     this.#zoomAt(target, zoomFactor)
   }
 
-  private #handlePointerDown = (event: PointerEvent) => {
+  #handlePointerDown = (event: PointerEvent) => {
     this.#isPanning = true
     this.#lastPointer = { x: event.clientX, y: event.clientY }
   }
 
-  private #handlePointerMove = (event: PointerEvent) => {
+  #handlePointerMove = (event: PointerEvent) => {
     if (!this.#isPanning || !this.#lastPointer) return
     const dx = event.clientX - this.#lastPointer.x
     const dy = event.clientY - this.#lastPointer.y
@@ -631,19 +695,19 @@ export class PixiStage {
     this.#clampCamera()
   }
 
-  private #handlePointerUp = () => {
+  #handlePointerUp = () => {
     this.#isPanning = false
     this.#lastPointer = null
     this.#clampCamera()
   }
 
-  private #zoomCentered(factor: number) {
+  #zoomCentered(factor: number) {
     if (!this.#host) return
     const center = { x: this.#host.clientWidth / 2, y: this.#host.clientHeight / 2 }
     this.#zoomAt(center, factor)
   }
 
-  private #zoomAt(screenPoint: { x: number; y: number }, factor: number) {
+  #zoomAt(screenPoint: { x: number; y: number }, factor: number) {
     const prevScale = this.#cameraScale
     const nextScale = clamp(prevScale * factor, this.#minZoom, this.#maxZoom)
     if (nextScale === prevScale) return
@@ -657,7 +721,7 @@ export class PixiStage {
     this.#updateCamera()
   }
 
-  private #screenToWorld(point: { x: number; y: number }, scale = this.#cameraScale) {
+  #screenToWorld(point: { x: number; y: number }, scale = this.#cameraScale) {
     const invScale = 1 / scale
     return {
       x: (point.x - this.#camera.position.x) * invScale,
@@ -665,12 +729,179 @@ export class PixiStage {
     }
   }
 
-  private #updateCamera() {
+  #updateLimbOverlay(entry: AgentSpriteData, agent: AgentState) {
+    if (this.#lightweightVisuals) {
+      entry.limbs.visible = false
+      entry.limbs.clear()
+      return
+    }
+    if (!featureFlags.landBodyPlan) {
+      entry.limbs.visible = false
+      entry.limbs.clear()
+      return
+    }
+    if (agent.dna.biome !== 'land' || !agent.dna.bodyPlan) {
+      entry.limbs.visible = false
+      entry.limbs.clear()
+      return
+    }
+
+    const legs = agent.dna.bodyPlan.limbs.filter((limb) => limb.kind === 'leg')
+    if (!legs.length) {
+      entry.limbs.visible = false
+      entry.limbs.clear()
+      return
+    }
+
+    const color = lightenColor(parseColor(agent.dna.familyColor), 0.2)
+    entry.limbs.visible = true
+    entry.limbs.clear()
+    entry.limbs.lineStyle(2, color, 0.8)
+
+    const placementAnchor: Record<string, number> = {
+      front: 0.3,
+      mid: 0,
+      rear: -0.3,
+      mixed: 0.15,
+    }
+
+    legs.forEach((leg) => {
+      const anchor = placementAnchor[leg.placement] ?? 0
+      const groupSpan = leg.count > 1 ? 12 : 0
+      for (let i = 0; i < leg.count; i++) {
+        const offset =
+          leg.count > 1 ? -groupSpan / 2 + (groupSpan / Math.max(leg.count - 1, 1)) * i : 0
+        const x = anchor * 24 + offset
+        const kneeY = 6 + leg.size * 8
+        const footY = 20 + leg.size * 14
+        const forward = anchor >= 0 ? 6 : -6
+        entry.limbs.moveTo(x, 8)
+        entry.limbs.lineTo(x + forward * 0.4, kneeY)
+        entry.limbs.lineTo(x + forward, footY)
+      }
+    })
+  }
+
+  #updateFinOverlay(entry: AgentSpriteData, agent: AgentState) {
+    if (this.#lightweightVisuals) {
+      entry.fins.visible = false
+      entry.fins.clear()
+      return
+    }
+    if (!featureFlags.aquaticBodyPlan) {
+      entry.fins.visible = false
+      entry.fins.clear()
+      return
+    }
+    if (agent.dna.biome !== 'water' || !agent.dna.bodyPlan) {
+      entry.fins.visible = false
+      entry.fins.clear()
+      return
+    }
+    const fins = agent.dna.bodyPlan.appendages.filter((appendage) => appendage.kind === 'fin')
+    if (!fins.length) {
+      entry.fins.visible = false
+      entry.fins.clear()
+      return
+    }
+    entry.fins.visible = true
+    entry.fins.clear()
+    fins.forEach((fin) => {
+      const color = lightenColor(parseColor(agent.dna.familyColor), 0.1 + fin.size * 0.1)
+      const baseY = fin.placement === 'dorsal' ? -12 : fin.placement === 'ventral' ? 12 : 0
+      const direction = fin.placement === 'tail' ? 1 : fin.placement === 'lateral' ? 0 : 0
+      for (let i = 0; i < fin.count; i++) {
+        const offset = fin.count > 1 ? -6 + (12 / Math.max(fin.count - 1, 1)) * i : 0
+        const width = 10 + fin.size * 12
+        const height = 14 + fin.size * 12
+        entry.fins
+          .moveTo(direction ? 20 : offset, baseY)
+          .lineTo(offset, baseY - height)
+          .lineTo(offset + width * (direction ? 1 : 0.4), baseY)
+          .closePath()
+          .fill({ color, alpha: 0.45 })
+      }
+    })
+  }
+
+  #updateWingOverlay(entry: AgentSpriteData, agent: AgentState) {
+    if (this.#lightweightVisuals) {
+      entry.wings.visible = false
+      entry.wings.clear()
+      return
+    }
+    if (!featureFlags.aerialBodyPlan) {
+      entry.wings.visible = false
+      entry.wings.clear()
+      return
+    }
+    if (agent.dna.biome !== 'air' || !agent.dna.bodyPlan) {
+      entry.wings.visible = false
+      entry.wings.clear()
+      return
+    }
+    const wings = agent.dna.bodyPlan.limbs.filter((limb) => limb.kind === 'wing')
+    if (!wings.length) {
+      entry.wings.visible = false
+      entry.wings.clear()
+      return
+    }
+    entry.wings.visible = true
+    entry.wings.clear()
+    const wing = wings[0]
+    const color = lightenColor(parseColor(agent.dna.familyColor), 0.15)
+    const span = 30 + wing.span * 40
+    const sweep = 12 + wing.surface * 20
+    entry.wings.lineStyle(1.5, color, 0.8)
+    entry.wings.moveTo(0, -4)
+    entry.wings.quadraticCurveTo(-span * 0.3, -sweep, -span / 2, -4)
+    entry.wings.quadraticCurveTo(-span * 0.3, -sweep * 1.1, 0, -4)
+    entry.wings.moveTo(0, -4)
+    entry.wings.quadraticCurveTo(span * 0.3, -sweep, span / 2, -4)
+    entry.wings.quadraticCurveTo(span * 0.3, -sweep * 1.1, 0, -4)
+    entry.wings.endFill()
+  }
+
+  #updateCamera() {
     this.#camera.scale.set(this.#cameraScale)
     this.#clampCamera()
   }
 
-  private #clampCamera() {
+  #countVisibleAgents(snapshot: SimulationSnapshot) {
+    if (!this.#app) return 0
+    const viewPadding = 100
+    const minX = -this.#camera.position.x / this.#cameraScale - viewPadding
+    const maxX = (-this.#camera.position.x + this.#app.screen.width) / this.#cameraScale + viewPadding
+    const minY = -this.#camera.position.y / this.#cameraScale - viewPadding
+    const maxY = (-this.#camera.position.y + this.#app.screen.height) / this.#cameraScale + viewPadding
+    let count = 0
+    for (const agent of snapshot.agents) {
+      if (agent.position.x >= minX && agent.position.x <= maxX && agent.position.y >= minY && agent.position.y <= maxY) {
+        count++
+      }
+    }
+    return count
+  }
+
+  #focusOnSnapshot(snapshot: SimulationSnapshot) {
+    if (!snapshot.agents.length) {
+      this.#focusCamera(this.#worldBounds.x / 2, this.#worldBounds.y / 2)
+      return
+    }
+    const center = snapshot.agents.reduce(
+      (acc, agent) => {
+        acc.x += agent.position.x
+        acc.y += agent.position.y
+        return acc
+      },
+      { x: 0, y: 0 },
+    )
+    center.x /= snapshot.agents.length
+    center.y /= snapshot.agents.length
+    this.#focusCamera(center.x, center.y)
+  }
+
+  #clampCamera() {
     if (!this.#host) return
     const width = this.#host.clientWidth
     const height = this.#host.clientHeight
@@ -686,7 +917,7 @@ export class PixiStage {
     this.#camera.position.y = clamp(this.#camera.position.y, minY, buffer)
   }
   
-  private #renderDebugOverlay() {
+  #renderDebugOverlay() {
     this.#miniMapOverlay.clear()
     if (!this.#lastSnapshot) return
     // ... (Keep debug logic same as provided, effectively just redrawing graphics)
@@ -703,7 +934,7 @@ export class PixiStage {
     }
   }
 
-  private #buildGrid() {
+  #buildGrid() {
     this.#gridLayer.clear()
     if (!this.#gridVisible) return
     
@@ -719,13 +950,81 @@ export class PixiStage {
     }
   }
   
-  focusOnFamily(color: string) { /* implementation ... */ }
-  focusOnAgent(agentId: number) { /* implementation ... */ }
+  focusOnFamily(color: string) {
+    if (!this.#lastSnapshot) return
+    const members = this.#lastSnapshot.agents.filter((agent) => agent.dna.familyColor === color)
+    if (!members.length) return
+    const center = members.reduce(
+      (acc, agent) => {
+        acc.x += agent.position.x
+        acc.y += agent.position.y
+        return acc
+      },
+      { x: 0, y: 0 },
+    )
+    center.x /= members.length
+    center.y /= members.length
+    this.#focusCamera(center.x, center.y)
+  }
+
+  focusOnAgent(agentId: number) {
+    let target: { x: number; y: number } | null = null
+    const sprite = this.#agentSprites.get(agentId)
+    if (sprite) {
+      target = { x: sprite.container.position.x, y: sprite.container.position.y }
+      sprite.container.visible = true
+    } else if (this.#lastSnapshot) {
+      const found = this.#lastSnapshot.agents.find((agent) => agent.id === agentId)
+      if (found) {
+        target = { x: found.position.x, y: found.position.y }
+        this.#pendingHighlight = agentId
+      }
+    }
+
+    if (target) {
+      this.#focusCamera(target.x, target.y)
+      if (sprite) {
+        this.#flashAgent(agentId)
+      }
+    }
+  }
+
+  #focusCamera(x: number, y: number) {
+    if (!this.#host) return
+    const width = this.#host.clientWidth || this.#worldBounds.x
+    const height = this.#host.clientHeight || this.#worldBounds.y
+    this.#camera.position.x = width / 2 - x * this.#cameraScale
+    this.#camera.position.y = height / 2 - y * this.#cameraScale
+    this.#clampCamera()
+  }
+
+  #flashAgent(agentId: number) {
+    const entry = this.#agentSprites.get(agentId)
+    if (!entry) return
+    if (entry.highlightTimeout) {
+      window.clearTimeout(entry.highlightTimeout)
+    }
+    const ring = new Graphics()
+    ring.circle(0, 0, 28).stroke({ width: 3, color: 0xfbbf24, alpha: 0.85 })
+    ring.alpha = 0.95
+    entry.container.addChildAt(ring, 0)
+    entry.highlightTimeout = window.setTimeout(() => {
+      ring.destroy()
+      entry.highlightTimeout = undefined
+    }, 650)
+  }
 }
 
 function parseColor(hex: string) {
   const cleaned = hex.replace('#', '')
   return Number.parseInt(cleaned, 16)
+}
+
+function lightenColor(color: number, amount: number) {
+  const r = Math.min(255, ((color >> 16) & 0xff) + 255 * amount)
+  const g = Math.min(255, ((color >> 8) & 0xff) + 255 * amount)
+  const b = Math.min(255, (color & 0xff) + 255 * amount)
+  return (r << 16) | (g << 8) | b
 }
 
 function clamp(value: number, min: number, max: number) {

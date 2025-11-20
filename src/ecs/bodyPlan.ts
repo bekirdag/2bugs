@@ -1,4 +1,15 @@
-import type { Archetype, Biome, BodyPlanGenes, DNA, SenseGene } from '@/types/sim'
+import type {
+  Archetype,
+  Biome,
+  BodyPlanGenes,
+  DNA,
+  FlightLocomotionStats,
+  LandLocomotionStats,
+  LegGene,
+  MovementProfile,
+  SenseGene,
+  SwimLocomotionStats,
+} from '@/types/sim'
 import { clamp } from '@/utils/math'
 import { featureFlags } from '@/config/featureFlags'
 
@@ -233,6 +244,122 @@ export function prepareDNA(dna: DNA): DNA {
     bodyPlan: cloneBodyPlan(ensured.bodyPlan),
     senseUpkeep: ensured.senseUpkeep ?? 0,
     bodyPlanVersion: ensured.bodyPlanVersion ?? BODY_PLAN_VERSION,
+    cowardice: ensured.cowardice ?? ensured.fear ?? 0.4,
+    speciesFear: ensured.speciesFear ?? ensured.fear ?? 0.4,
+    conspecificFear: ensured.conspecificFear ?? 0.25,
+    sizeFear: ensured.sizeFear ?? 0.5,
+    dependency: ensured.dependency ?? 0.5,
+    independenceAge: ensured.independenceAge ?? 20,
   }
-  return applySenseOverrides(normalized)
+  return applySenseOverrides(enforceDiet(normalized))
+}
+
+export function enforceDiet(dna: DNA): DNA {
+  if (dna.archetype === 'hunter') {
+    return {
+      ...dna,
+      preferredFood: ['prey'],
+      scavengerAffinity: 0,
+    }
+  }
+  if (dna.archetype === 'prey') {
+    return {
+      ...dna,
+      preferredFood: ['plant'],
+      scavengerAffinity: 0,
+    }
+  }
+  return dna
+}
+
+export function deriveLandLocomotion(
+  plan: BodyPlanGenes,
+  archetype: Archetype,
+  biome: Biome,
+): LandLocomotionStats {
+  const legs = plan.limbs.filter((limb): limb is LegGene => limb.kind === 'leg')
+  if (!legs.length || biome !== 'land') {
+    return {
+      strideLength: BASE_VISION[archetype] * 0.3,
+      legCount: 0,
+      agility: 0.4,
+    }
+  }
+  const totalLegs = legs.reduce((sum, leg) => sum + leg.count, 0)
+  const avgSize =
+    legs.reduce((sum, leg) => sum + leg.size * leg.count, 0) / Math.max(totalLegs, 1)
+  const gait =
+    legs.reduce((sum, leg) => sum + leg.gaitStyle * leg.count, 0) / Math.max(totalLegs, 1)
+  const strideLength = (0.45 + avgSize * 0.65) * (1 + gait * 0.2)
+  const agility = clamp(0.3 + avgSize * 0.4 + gait * 0.2, 0.2, 1)
+
+  return {
+    strideLength,
+    legCount: totalLegs,
+    agility,
+  }
+}
+
+export function deriveSwimLocomotion(plan: BodyPlanGenes): SwimLocomotionStats | undefined {
+  const fins = plan.appendages.filter((appendage) => appendage.kind === 'fin')
+  const muscles = plan.appendages.filter((appendage) => appendage.kind === 'muscle-band')
+  if (!fins.length && !muscles.length) return undefined
+
+  const finCount = fins.reduce((sum, fin) => sum + fin.count, 0)
+  const finSize =
+    fins.reduce((sum, fin) => sum + fin.size * fin.count, 0) / Math.max(finCount, 1)
+  const thrust = 0.5 + finSize * 0.6 + Math.min(finCount, 4) * 0.1
+  const muscleFlex =
+    muscles.reduce((sum, band) => sum + band.flexibility, 0) / Math.max(muscles.length, 1)
+  const muscleDensity =
+    muscles.reduce((sum, band) => sum + band.density, 0) / Math.max(muscles.length, 1)
+  const turnRate = 0.4 + muscleFlex * 0.4 + finSize * 0.2
+  const drift = 0.3 + (muscleDensity + finSize) * 0.3
+
+  return {
+    thrust,
+    turnRate,
+    drift,
+  }
+}
+
+export function deriveFlightLocomotion(plan: BodyPlanGenes): FlightLocomotionStats | undefined {
+  const wings = plan.limbs.filter((limb) => limb.kind === 'wing')
+  if (!wings.length) return undefined
+  const wing = wings[0]
+  const lift = 0.6 + wing.span * 0.5 + wing.surface * 0.4
+  const glide = 0.4 + wing.surface * 0.5 + wing.span * 0.2
+  const takeoff = 0.3 + wing.articulation * 0.5
+  return {
+    lift,
+    glide,
+    takeoff,
+  }
+}
+
+export function deriveMovementProfile(
+  plan: BodyPlanGenes,
+  archetype: Archetype,
+  biome: Biome,
+): MovementProfile {
+  const profile: MovementProfile = {}
+  if (featureFlags.landBodyPlan) {
+    const land = deriveLandLocomotion(plan, archetype, biome)
+    if (land.legCount > 0) {
+      profile.land = land
+    }
+  }
+  if (featureFlags.aquaticBodyPlan) {
+    const swim = deriveSwimLocomotion(plan)
+    if (swim) {
+      profile.water = swim
+    }
+  }
+  if (featureFlags.aerialBodyPlan) {
+    const flight = deriveFlightLocomotion(plan)
+    if (flight) {
+      profile.air = flight
+    }
+  }
+  return profile
 }

@@ -201,6 +201,124 @@ button.grid-active {
   font-size: 1rem;
 }
 
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.15);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  font-size: 0.82rem;
+}
+
+.mutation-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.mutation-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  align-items: flex-start;
+}
+
+.mutation-header .muted.small {
+  margin: 0.15rem 0 0;
+  font-size: 0.8rem;
+}
+
+.mutation-tally {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  font-size: 0.85rem;
+  color: #cbd5f5;
+}
+
+.mutation-tally span {
+  padding: 0.3rem 0.5rem;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.mutation-tally .body-plan-count {
+  border-color: #fbbf24;
+  color: #fbbf24;
+}
+
+.mutation-feed {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.mutation-feed li {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(10, 14, 26, 0.6);
+  transition: border-color 120ms ease, transform 120ms ease;
+}
+
+.mutation-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.5rem 0.6rem;
+  color: inherit;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.mutation-row:focus-visible {
+  outline: 2px solid #fbbf24;
+}
+
+.mutation-feed li:hover {
+  border-color: rgba(251, 191, 36, 0.4);
+  transform: translateY(-1px);
+}
+
+.mutation-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.mutation-genes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.3rem;
+}
+
+.gene-pill {
+  background: rgba(52, 211, 153, 0.12);
+  border-color: rgba(52, 211, 153, 0.4);
+  color: #a7f3d0;
+}
+
+.body-plan-pill {
+  background: rgba(251, 191, 36, 0.15);
+  border-color: rgba(251, 191, 36, 0.5);
+  color: #fbbf24;
+}
+
+.color-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+}
+
 .timing-grid {
   display: flex;
   flex-direction: column;

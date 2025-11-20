@@ -4,9 +4,21 @@ const processEnv = typeof process !== 'undefined' ? process.env ?? {} : {}
 const sensesFlag =
   (importMetaEnv.VITE_FEATURE_SENSES_FROM_DNA as string | undefined) ??
   (processEnv.VITE_FEATURE_SENSES_FROM_DNA as string | undefined)
+const landBodyPlanFlag =
+  (importMetaEnv.VITE_FEATURE_LAND_BODY_PLAN as string | undefined) ??
+  (processEnv.VITE_FEATURE_LAND_BODY_PLAN as string | undefined)
+const aquaticBodyPlanFlag =
+  (importMetaEnv.VITE_FEATURE_AQUATIC_BODY_PLAN as string | undefined) ??
+  (processEnv.VITE_FEATURE_AQUATIC_BODY_PLAN as string | undefined)
+const aerialBodyPlanFlag =
+  (importMetaEnv.VITE_FEATURE_AERIAL_BODY_PLAN as string | undefined) ??
+  (processEnv.VITE_FEATURE_AERIAL_BODY_PLAN as string | undefined)
 
 const parseFlag = (value: string | undefined) => value === '1' || value === 'true'
 
 export const featureFlags = {
   sensesFromBodyPlan: parseFlag(sensesFlag),
+  landBodyPlan: parseFlag(landBodyPlanFlag),
+  aquaticBodyPlan: parseFlag(aquaticBodyPlanFlag),
+  aerialBodyPlan: parseFlag(aerialBodyPlanFlag),
 }

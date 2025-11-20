@@ -14,8 +14,16 @@ let loopActive = false
 let accumulator = 0
 let lastTime = performance.now()
 let lastSizeLog = performance.now()
+let fpsWindow = 0
+let fpsFrames = 0
+let lastFps = 0
+let lastTickTime = performance.now()
+let frameCounter = 0
+let lastTimings: Record<string, number> = {}
+let telemetryHandle: number | null = null
 
 const BASE_DT = DEFAULT_WORLD_CONFIG.timeStepMs
+const TELEMETRY_INTERVAL_MS = 1000
 
 ctx.addEventListener('message', (event: MessageEvent<MainToWorkerMessage>) => {
   const message = event.data
@@ -24,6 +32,7 @@ ctx.addEventListener('message', (event: MessageEvent<MainToWorkerMessage>) => {
       world = initWorld(message.payload)
       pushSnapshot()
       restartLoop()
+      restartTelemetry()
       break
     case 'update-controls':
       controls = message.payload
@@ -48,14 +57,26 @@ ctx.addEventListener('message', (event: MessageEvent<MainToWorkerMessage>) => {
       world = createWorldFromSnapshot(message.payload)
       pushSnapshot()
       restartLoop()
+      restartTelemetry()
       break
   }
 })
 
 function runLoop() {
   const now = performance.now()
-  accumulator += now - lastTime
+  const delta = now - lastTime
+  accumulator += delta
   lastTime = now
+
+  const fpsDelta = now - lastTickTime
+  fpsWindow += fpsDelta
+  fpsFrames++
+  if (fpsWindow >= 1000) {
+    lastFps = Math.round((fpsFrames * 1000) / fpsWindow)
+    fpsWindow = 0
+    fpsFrames = 0
+  }
+  lastTickTime = now
 
   const step = BASE_DT * Math.max(0.1, controls.speed)
   const combinedTimings: Record<string, number> = {}
@@ -72,21 +93,14 @@ function runLoop() {
   }
 
   if (!controls.paused && stepsExecuted) {
+    frameCounter++
     const snapshot = pushSnapshot()
     const now = performance.now()
     if (now - lastSizeLog >= 10_000) {
       lastSizeLog = now
       // logAgentSizes(snapshot)
     }
-    ctx.postMessage(
-      {
-        type: 'telemetry',
-        payload: {
-          timings: combinedTimings,
-          geneAverages: summarizeGenes(snapshot),
-        },
-      } satisfies WorkerToMainMessage,
-    )
+    lastTimings = combinedTimings
   }
 }
 
@@ -133,10 +147,28 @@ function restartLoop() {
   }
 }
 
+function restartTelemetry() {
+  if (telemetryHandle !== null) {
+    ctx.clearInterval(telemetryHandle)
+    telemetryHandle = null
+  }
+  telemetryHandle = ctx.setInterval(() => {
+    ctx.postMessage(
+      {
+        type: 'telemetry',
+        payload: {
+          timings: lastTimings,
+          geneAverages: summarizeGenesFromContext(world),
+          fps: lastFps,
+        },
+      } satisfies WorkerToMainMessage,
+    )
+  }, TELEMETRY_INTERVAL_MS)
+}
+
 ctx.postMessage({ type: 'log', payload: 'Simulation worker ready' } satisfies WorkerToMainMessage)
 
-function summarizeGenes(snapshot: SimulationSnapshot): Record<string, number> {
-  if (!snapshot.agents.length) return {}
+function summarizeGenesFromContext(ctxWorld: typeof world): Record<string, number> {
   const totals: Record<string, number> = {
     speed: 0,
     vision: 0,
@@ -144,16 +176,34 @@ function summarizeGenes(snapshot: SimulationSnapshot): Record<string, number> {
     stamina: 0,
     scavenger: 0,
     metabolism: 0,
+    awareness: 0,
+    stride: 0,
+    fins: 0,
+    wings: 0,
   }
-  snapshot.agents.forEach((agent) => {
-    totals.speed += agent.dna.baseSpeed
-    totals.vision += agent.dna.visionRange
-    totals.aggression += agent.dna.aggression
-    totals.stamina += agent.dna.stamina ?? 1
-    totals.scavenger += agent.dna.scavengerAffinity ?? 0
-    totals.metabolism += agent.dna.metabolism ?? 0
+  const count = ctxWorld.genomes.size
+  if (!count) return {}
+  ctxWorld.genomes.forEach((dna) => {
+    totals.speed += dna.baseSpeed
+    totals.vision += dna.visionRange
+    totals.aggression += dna.aggression
+    totals.stamina += dna.stamina ?? 1
+    totals.scavenger += dna.scavengerAffinity ?? 0
+    totals.metabolism += dna.metabolism ?? 0
+    totals.awareness += dna.awareness ?? 0
+    if (dna.biome === 'land') {
+      const legs = dna.bodyPlan?.limbs.filter((limb) => limb.kind === 'leg').reduce((sum, leg) => sum + leg.count, 0) ?? 0
+      totals.stride += legs
+    } else if (dna.biome === 'water') {
+      const fins = dna.bodyPlan?.appendages
+        .filter((appendage) => appendage.kind === 'fin')
+        .reduce((sum, fin) => sum + fin.size, 0) ?? 0
+      totals.fins += fins
+    } else if (dna.biome === 'air') {
+      const wing = dna.bodyPlan?.limbs.find((limb) => limb.kind === 'wing')
+      totals.wings += wing ? wing.span + wing.surface : 0
+    }
   })
-  const count = snapshot.agents.length
   Object.keys(totals).forEach((key) => {
     totals[key] = totals[key] / count
   })

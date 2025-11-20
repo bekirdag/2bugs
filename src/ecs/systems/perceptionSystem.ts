@@ -13,6 +13,10 @@ const MODE = {
 } as const
 
 export function perceptionSystem(ctx: SimulationContext, controls: ControlState) {
+  const tick = ctx.tick
+  // Run perception every other tick to reduce load
+  if (tick % 2 === 1) return
+
   ctx.agents.forEach((entity, id) => {
     if (ModeState.mode[entity] === MODE.Mate) return
 
@@ -28,13 +32,19 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
     const archetype = decodeArchetype(AgentMeta.archetype[entity])
     const dietAgents = archetypeDiet(archetype)
     const eatsPlants = dietAgents.includes('plant')
+    const speciesFear = clamp(DNA.speciesFear[entity] ?? DNA.fear[entity] ?? 0.3, 0, 1)
+    const conspecificFear = clamp(DNA.conspecificFear[entity] ?? 0.25, 0, 1)
+    const sizeFear = clamp(DNA.sizeFear[entity] ?? 0.5, 0, 1)
 
     const mePos = { x: Position.x[entity], y: Position.y[entity] }
     const vision = DNA.visionRange[entity] * (1 + (awareness - 0.5) * 0.6)
     const neighbors = ctx.agentIndex.query(mePos, vision)
 
-    let closestPredator: Candidate | null = null
-    let bestPrey: Candidate | null = null
+    let closestPredatorId: number | null = null
+    let closestPredatorDist = Infinity
+    let closestPredatorType: 'hunter' | 'other' | null = null
+    let bestPreyId: number | null = null
+    let bestPreyWeight = -Infinity
 
     neighbors.forEach((bucket) => {
       if (bucket.id === id) return
@@ -43,27 +53,55 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
       const otherType = decodeArchetype(AgentMeta.archetype[otherEntity])
       const otherPos = { x: Position.x[otherEntity], y: Position.y[otherEntity] }
       const dist = Math.sqrt(distanceSquared(mePos, otherPos))
-      const isPredator = archetypeDiet(otherType).includes(archetype)
-      if (isPredator) {
-          if (!closestPredator || dist < closestPredator.distance) {
-            closestPredator = { entity: otherEntity, distance: dist }
-          }
+      const senseRange = vision
+      if (dist > senseRange) return
+
+      const sameSpecies = otherType === archetype
+      const sameFamily = AgentMeta.familyColor[otherEntity] === AgentMeta.familyColor[entity]
+      const sizeRatio =
+        Energy.fatCapacity[otherEntity] / Math.max(Energy.fatCapacity[entity] || 1, 1)
+      const sizeFactor = clamp(sizeRatio - 1, -0.5, 2) * sizeFear
+
+      let threatBase = 0
+      if (otherType === 'hunter' && archetype !== 'hunter') {
+        threatBase = 1.2 + speciesFear * 0.6
+      } else if (!sameSpecies) {
+        threatBase = 0.6 + speciesFear * 0.6
+      } else if (!sameFamily) {
+        threatBase = 0.3 + conspecificFear * 0.8
+      } else {
+        threatBase = 0.1
+      }
+
+      const cowardice = clamp(DNA.cowardice[entity] ?? DNA.fear[entity] ?? 0.3, 0, 1)
+      const proximity = clamp(1 - dist / senseRange, 0, 1)
+      const threatScore = threatBase * (0.6 + cowardice * 0.7) * (1 + sizeFactor) * (0.4 + proximity)
+
+      if (threatScore > 0.35 && dist < closestPredatorDist) {
+        closestPredatorId = AgentMeta.id[otherEntity]
+        closestPredatorDist = dist
+        closestPredatorType = otherType === 'hunter' ? 'hunter' : 'other'
       }
       if (dietAgents.includes(otherType) && hungry) {
         const weight =
           (1 / Math.max(dist, 1)) * (0.6 + focus * 0.4) * (1 + aggression * 0.4) * awareness
-        if (!bestPrey || weight > bestPrey.weight!) {
-          bestPrey = { entity: otherEntity, distance: dist, weight }
+        if (weight > bestPreyWeight) {
+          bestPreyWeight = weight
+          bestPreyId = AgentMeta.id[otherEntity]
         }
       }
     })
 
-    if (closestPredator) {
-      ModeState.mode[entity] = MODE.Flee
-      ModeState.targetType[entity] = 1
-      ModeState.targetId[entity] = AgentMeta.id[closestPredator.entity]
-      ModeState.dangerTimer[entity] = 1
-      return
+    if (closestPredatorId !== null) {
+      const cowardice = clamp(DNA.cowardice[entity] ?? DNA.fear[entity] ?? 0.3, 0, 1)
+      const fleeThreshold = vision * (0.2 + cowardice * 0.7) * (closestPredatorType === 'hunter' ? 1 : 0.85)
+      if (closestPredatorDist <= fleeThreshold) {
+        ModeState.mode[entity] = MODE.Flee
+        ModeState.targetType[entity] = 1
+        ModeState.targetId[entity] = closestPredatorId
+        ModeState.dangerTimer[entity] = 1
+        return
+      }
     }
 
     const stability = DNA.moodStability[entity] ?? 0.5
@@ -71,16 +109,17 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
     const huntDrive = hungry
       ? 0.6 + focus * 0.3 + (DNA.stamina[entity] ?? 1) * 0.1 + curiosity * 0.2
       : aggression * 0.35 + focus * 0.2 - stress * (0.2 + (1 - stability) * 0.2)
-    if (huntDrive > 0.35 && bestPrey) {
+    if (huntDrive > 0.35 && bestPreyId !== null) {
       ModeState.mode[entity] = MODE.Hunt
       ModeState.targetType[entity] = 1
-      ModeState.targetId[entity] = AgentMeta.id[bestPrey.entity]
+      ModeState.targetId[entity] = bestPreyId
       return
     }
 
     if ((hungry || famished) && eatsPlants) {
       const plantCandidates = ctx.plantIndex.query(mePos, vision)
-      let bestPlant: PlantCandidate | null = null
+      let bestPlantId: number | null = null
+      let bestPlantWeight = -Infinity
       plantCandidates.forEach((bucket) => {
         const plantEntity = ctx.plants.get(bucket.id)
         if (plantEntity === undefined) return
@@ -88,14 +127,15 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
         const dist = Math.sqrt(distanceSquared(mePos, plantPos))
         const weight =
           (Energy.fatCapacity[entity] * 0.2 + 1) * (1 / Math.max(dist, 1)) * (famished ? 1.2 : 1)
-        if (!bestPlant || weight > bestPlant.weight!) {
-          bestPlant = { id: bucket.id, entity: plantEntity, distance: dist, weight }
+        if (weight > bestPlantWeight) {
+          bestPlantWeight = weight
+          bestPlantId = bucket.id
         }
       })
-      if (bestPlant) {
+      if (bestPlantId !== null) {
         ModeState.mode[entity] = MODE.Graze
         ModeState.targetType[entity] = 2
-        ModeState.targetId[entity] = bestPlant.id
+        ModeState.targetId[entity] = bestPlantId
         return
       }
     }

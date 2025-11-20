@@ -2,6 +2,8 @@ import { DNA, Energy, Heading, ModeState, Position, Velocity } from '../componen
 import type { SimulationContext } from '../types'
 
 import { clamp, lerpAngle } from '@/utils/math'
+import { featureFlags } from '@/config/featureFlags'
+import { deriveMovementProfile } from '@/ecs/bodyPlan'
 
 const MODE = {
   Sleep: 1,
@@ -24,17 +26,55 @@ export function movementSystem(
     const mode = ModeState.mode[entity]
     const resting = mode === MODE.Sleep
 
-    const targetPosition = !resting ? resolveTargetPosition(ctx, entity) : null
+    let targetPosition = !resting ? resolveTargetPosition(ctx, entity) : null
+
+    const genome = ctx.genomes.get(id)
+    const biome = genome?.biome ?? 'land'
+    let profile = ctx.locomotion.get(id)
+    const needsProfile =
+      (featureFlags.landBodyPlan && biome === 'land' && (!profile || !profile.land)) ||
+      (featureFlags.aquaticBodyPlan && biome === 'water' && (!profile || !profile.water)) ||
+      (featureFlags.aerialBodyPlan && biome === 'air' && (!profile || !profile.air))
+    if (needsProfile && genome) {
+      profile = deriveMovementProfile(genome.bodyPlan, genome.archetype, biome)
+      ctx.locomotion.set(id, profile)
+    }
+    const landStats = featureFlags.landBodyPlan ? profile?.land : undefined
+    const swimStats = featureFlags.aquaticBodyPlan ? profile?.water : undefined
+    const flightStats = featureFlags.aerialBodyPlan ? profile?.air : undefined
+
+    let turnFactor = DNA.curiosity[entity] ?? 0.3
+    if (biome === 'land' && landStats) {
+      turnFactor = clamp(landStats.agility * 1.2, 0.15, 1.5)
+    } else if (biome === 'water' && swimStats) {
+      turnFactor = clamp(swimStats.turnRate, 0.2, 1.3)
+    } else if (biome === 'air' && flightStats) {
+      turnFactor = clamp(0.4 + (flightStats.lift + flightStats.glide) * 0.3, 0.3, 1.6)
+    }
+
+    // Juvenile bonding: follow parent if within dependency window
+    const birthTick = ctx.birthTick.get(id) ?? 0
+    const ageTicks = Math.max(0, ctx.tick - birthTick)
+    const dependency = genome?.dependency ?? 0
+    const independence = genome?.independenceAge ?? 20
+    const parentId = ctx.parentMap.get(id)
+    if (!resting && dependency > 0.05 && ageTicks < independence && parentId) {
+      const parentEntity = ctx.agents.get(parentId)
+      if (parentEntity !== undefined) {
+        targetPosition = { x: Position.x[parentEntity], y: Position.y[parentEntity] }
+        ModeState.mode[entity] = MODE.Patrol
+      }
+    }
 
     if (targetPosition) {
       let desiredHeading = Math.atan2(targetPosition.y - Position.y[entity], targetPosition.x - Position.x[entity])
       if (mode === MODE.Flee) {
         desiredHeading += Math.PI
       }
-      const turnAmount = clamp((Heading.turnRate[entity] || DNA.curiosity[entity]) * step, 0, 1)
+      const turnAmount = clamp((Heading.turnRate[entity] || turnFactor) * step, 0, 1)
       Heading.angle[entity] = lerpAngle(Heading.angle[entity], desiredHeading, turnAmount)
     } else if (!resting) {
-      const curiosity = clamp((DNA.curiosity[entity] ?? 0.2) + curiosityBias, 0.05, 1)
+      const curiosity = clamp((turnFactor ?? DNA.curiosity[entity] ?? 0.2) + curiosityBias, 0.05, 1)
       const jitter = (ctx.rng() - 0.5) * curiosity * 2
       Heading.angle[entity] += jitter * step
     }
@@ -51,7 +91,15 @@ export function movementSystem(
               ? 1.05
               : 1
     const fatPenalty = 1 / (1 + Energy.fatStore[entity] / Math.max(Energy.fatCapacity[entity], 1))
-    let targetSpeed = DNA.baseSpeed[entity] * modeBoost * fatPenalty
+    let locomotionBonus = 1
+    if (biome === 'land' && landStats) {
+      locomotionBonus = clamp(0.6 + landStats.strideLength, 0.5, 1.6)
+    } else if (biome === 'water' && swimStats) {
+      locomotionBonus = clamp(0.5 + swimStats.thrust, 0.4, 1.8)
+    } else if (biome === 'air' && flightStats) {
+      locomotionBonus = clamp(0.7 + flightStats.lift, 0.6, 2)
+    }
+    let targetSpeed = DNA.baseSpeed[entity] * locomotionBonus * modeBoost * fatPenalty
 
     if (resting) {
       targetSpeed = 0

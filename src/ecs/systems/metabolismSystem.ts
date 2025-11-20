@@ -1,8 +1,10 @@
-import { DNA, Energy, ModeState, Mood, Reproduction } from '../components'
+import { DNA, Energy, ModeState, Mood, Reproduction, Velocity } from '../components'
 import type { SimulationContext } from '../types'
 
 import type { ControlState } from '@/types/sim'
 import { clamp } from '@/utils/math'
+import { featureFlags } from '@/config/featureFlags'
+import { deriveMovementProfile } from '@/ecs/bodyPlan'
 
 const MODE = {
   Sleep: 1,
@@ -21,13 +23,44 @@ export function metabolismSystem(
 
   ctx.agents.forEach((entity, id) => {
     const mode = ModeState.mode[entity]
+    const genome = ctx.genomes.get(id)
+    let profile = ctx.locomotion.get(id)
+    if (!profile && genome) {
+      profile = deriveMovementProfile(genome.bodyPlan, genome.archetype, genome.biome ?? 'land')
+      ctx.locomotion.set(id, profile)
+    }
+    const biome = genome?.biome ?? 'land'
     const stressLoad = 1 + Mood.stress[entity] * 0.25
-    const hungerMultiplier = mode === MODE.Hunt ? 1.35 : mode === MODE.Flee ? 1.5 : 1
+    const hungerMultiplier = mode === MODE.Hunt ? 1.35 : mode === MODE.Flee ? 1.7 : 1
     const staminaFactor = 1 / Math.max(DNA.stamina[entity] ?? 1, 0.4)
     const burnRate =
       DNA.metabolism[entity] * stressLoad * hungerMultiplier * dt * controls.speed * staminaFactor
 
-    Energy.value[entity] -= burnRate
+    const senseDrain =
+      featureFlags.sensesFromBodyPlan && DNA.senseUpkeep[entity]
+        ? (DNA.senseUpkeep[entity] ?? 0) * dt
+        : 0
+    let locomotionDrain = 0
+    if (biome === 'water' && featureFlags.aquaticBodyPlan && profile?.water) {
+      locomotionDrain = (profile.water.thrust + profile.water.turnRate) * dt
+    } else if (biome === 'air' && featureFlags.aerialBodyPlan && profile?.air) {
+      locomotionDrain = (profile.air.lift + profile.air.takeoff * 0.5) * dt
+    }
+
+    // Running / movement drain scaled by actual velocity
+    const speed = Math.sqrt(Velocity.x[entity] * Velocity.x[entity] + Velocity.y[entity] * Velocity.y[entity])
+    const runDrain =
+      speed * dt * (mode === MODE.Flee ? 1.2 : mode === MODE.Hunt ? 0.9 : 0.4)
+
+    // Fat mass tax even while idle
+    const fatRatio = Energy.fatCapacity[entity] > 0 ? Energy.fatStore[entity] / Energy.fatCapacity[entity] : 0
+    const massPenalty = fatRatio * (genome?.bodyMass ?? 1) * dt * 0.4
+
+    // Pregnancy upkeep
+    const isPregnant = ctx.pregnancies.has(id)
+    const pregnancyCost = isPregnant ? (DNA.gestationCost[entity] ?? 5) * dt * 0.6 : 0
+
+    Energy.value[entity] -= burnRate + senseDrain + locomotionDrain + runDrain + massPenalty + pregnancyCost
     if (Energy.value[entity] < 0 && Energy.fatStore[entity] > 0) {
       const repay = Math.min(Energy.fatStore[entity], Math.abs(Energy.value[entity]))
       Energy.fatStore[entity] -= repay

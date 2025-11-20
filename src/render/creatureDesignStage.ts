@@ -45,6 +45,7 @@ export class CreatureDesignStage {
       background: '#030813',
       antialias: true,
       autoDensity: true,
+      preference: 'webgpu',
       resolution: window.devicePixelRatio || 1,
       resizeTo: host,
     })
@@ -71,7 +72,7 @@ export class CreatureDesignStage {
     })
     this.#resizeObserver.observe(host)
 
-    this.#app.ticker.add((delta) => this.#animateGlow(delta))
+    this.#app.ticker.add((ticker) => this.#animateGlow(ticker.deltaTime))
   }
 
   render(config: CreatureDesignConfig) {

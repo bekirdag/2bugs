@@ -26,6 +26,12 @@ export const GENE_KEYS = [
   'curiosity',
   'cohesion',
   'fear',
+  'cowardice',
+  'speciesFear',
+  'conspecificFear',
+  'sizeFear',
+  'dependency',
+  'independenceAge',
   'camo',
   'awareness',
   'fertility',
@@ -128,6 +134,18 @@ export function randomGeneValue(gene: GeneKey, rng: () => number): number {
       return 0.1 + rng() * 0.7
     case 'fear':
       return 0.1 + rng() * 0.8
+    case 'cowardice':
+      return 0.1 + rng() * 0.9
+    case 'speciesFear':
+      return 0.1 + rng() * 0.9
+    case 'conspecificFear':
+      return 0.05 + rng() * 0.7
+    case 'sizeFear':
+      return 0.1 + rng() * 0.9
+    case 'dependency':
+      return rng() // 0..1
+    case 'independenceAge':
+      return 5 + rng() * 40 // in ticks/seconds proxy
     case 'camo':
       return 0.1 + rng() * 0.8
     case 'awareness':

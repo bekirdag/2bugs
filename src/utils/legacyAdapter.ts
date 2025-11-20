@@ -6,6 +6,7 @@ import {
   type AgentMode,
   type AgentState,
   type Biome,
+  type DNA,
   type SimulationSnapshot,
   type WorldConfig,
 } from '@/types/sim'
@@ -46,12 +47,13 @@ export function snapshotToLegacyPhp(snapshot: SimulationSnapshot): string {
     if (agent.dna.archetype !== 'hunter' && agent.dna.archetype !== 'prey') return
     record[`agent${agent.id}`] = serializeAgent(agent)
   })
-  return serialize(record, 'utf-8')
+  return serialize(record, undefined, { encoding: 'utf-8' })
 }
 
 function normalizeLegacyCreature(id: string, creature: LegacyCreature): AgentState | null {
   const type = (creature.type as string)?.toLowerCase()
   if (type !== 'hunter' && type !== 'prey') return null
+  const archetype = type as DNA['archetype']
 
   const speedGene = Number(creature.speed ?? 50)
   const visionGene = Number(creature.eyesightfactor ?? 30)
@@ -85,8 +87,8 @@ function normalizeLegacyCreature(id: string, creature: LegacyCreature): AgentSta
   }
 
   const biome: Biome = 'land'
-  const dna = {
-    archetype: type,
+  const dna: DNA = {
+    archetype,
     biome,
     familyColor: color,
     baseSpeed: mapRange(speedGene, 0, 100, 180, 420),
@@ -114,6 +116,7 @@ function normalizeLegacyCreature(id: string, creature: LegacyCreature): AgentSta
     curiosity: clamp(Number(creature.patrol_threshold ?? 50) / 100, 0.2, 1),
     cohesion: clamp(Number(creature.escape_rate ?? 50) / 120, 0.1, 1),
     fear: clamp(Number(creature.danger_distance ?? 40) / 160, 0.1, 1),
+    cowardice: clamp(Number(creature.escape_rate ?? 50) / 100, 0.1, 1),
     camo: clamp(Number(creature.defence ?? 40) / 120, 0.05, 0.9),
     awareness: clamp(Number(creature.eyesightfactor ?? 50) / 100, 0.3, 1),
     fertility: clamp(Number(creature.sex_desire ?? 50) / 100, 0.2, 0.9),
@@ -125,6 +128,11 @@ function normalizeLegacyCreature(id: string, creature: LegacyCreature): AgentSta
     sleepEfficiency: clamp(1 - Number(creature.stress ?? 20) / 120, 0.4, 1),
     scavengerAffinity: type === 'hunter' ? 0.4 : 0.15,
     senseUpkeep: 0,
+    speciesFear: clamp(Number(creature.danger_distance ?? 40) / 200, 0.1, 1),
+    conspecificFear: clamp(Number(creature.escape_rate ?? 50) / 200, 0.05, 0.8),
+    sizeFear: clamp(Number(creature.escape_rate ?? 50) / 120, 0.1, 1),
+    dependency: clamp(Number(creature.khudz) ?? 0.5, 0, 1), // fallback key, default mid
+    independenceAge: clamp(Number(creature.ageout ?? 20), 5, 60),
     bodyPlanVersion: BODY_PLAN_VERSION,
     bodyPlan: createBaseBodyPlan(type, biome),
   }

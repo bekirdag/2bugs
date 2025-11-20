@@ -1,7 +1,8 @@
-import { DNA, Energy, Heading, ModeState, Position } from '../components'
+import { AgentMeta, DNA, Energy, Heading, ModeState, Position } from '../components'
 import type { SimulationContext } from '../types'
 
 import { clamp, lerpAngle } from '@/utils/math'
+import { ArchetypeCode } from '../components'
 
 const MODE = {
   Graze: 2,
@@ -17,6 +18,8 @@ export function scavengerSystem(ctx: SimulationContext, dt: number) {
   if (ctx.lootSites.length === 0) return
 
   ctx.agents.forEach((entity) => {
+    const archetype = decodeArchetype(AgentMeta.archetype[entity])
+    if (archetype !== 'scavenger') return
     const affinity = DNA.scavengerAffinity[entity] ?? 0
     if (affinity <= 0) return
     const me = { x: Position.x[entity], y: Position.y[entity] }
@@ -49,4 +52,17 @@ export function scavengerSystem(ctx: SimulationContext, dt: number) {
       ModeState.mode[entity] = MODE.Hunt
     }
   })
+}
+
+function decodeArchetype(code: number): 'hunter' | 'prey' | 'scavenger' | 'plant' {
+  switch (code) {
+    case ArchetypeCode.Hunter:
+      return 'hunter'
+    case ArchetypeCode.Scavenger:
+      return 'scavenger'
+    case ArchetypeCode.Plant:
+      return 'plant'
+    default:
+      return 'prey'
+  }
 }
