@@ -34,12 +34,34 @@ type AgentSpriteData = {
   accent: Sprite
   glow: Sprite
   overlay: Sprite
+  organs: Graphics
   limbs: Graphics
   fins: Graphics
   wings: Graphics
   archetype: 'hunter' | 'prey'
   pulsePhase: number
   wobbleSpeed: number
+  gaitPhase: number
+  gaitPhaseFromSim: boolean
+  lastHeading?: number
+  turnIntensity: number
+  bodyOffsetX: number
+  bodyOffsetY: number
+  moveIntensity: number
+  landVisuals:
+    | {
+        dims: CreatureDimensions
+        legMounts: { x: number; side: -1 | 1; size: number; gaitStyle: number }[]
+        legSize: number
+        gaitStyle: number
+        tailMounts: { x: number; y: number; angle: number }[]
+        tailSize: number
+        limbColor: number
+      }
+    | null
+  eyePlacements: { x: number; y: number; angle: number }[]
+  earPlacements: { x: number; y: number; angle: number }[]
+  nosePlacements: { x: number; y: number; angle: number }[]
   highlightTimeout?: number
   active: boolean // For pooling
 }
@@ -99,7 +121,7 @@ const TIER_COLORS: Record<MoodTier, number> = {
 const DEBUG_FLEE_COLOR = 0xff4dd8
 const PINK_MASK = 0xff4dd8
 
-const CREATURE_TEXTURE_SCALE = 0.18
+const CREATURE_TEXTURE_SCALE = 0.32
 
 export class PixiStage {
   #app?: Application
@@ -136,9 +158,11 @@ export class PixiStage {
   #autoCentered = false
   #lightweightVisuals = false
   #debugMoodOverlay = false
+  #debugOrganOverlay = false
 
   #agentTextures: Record<'hunter' | 'prey', { base: Texture; accent: Texture; glow: Texture; overlay: Texture }> | null =
     null
+  #agentDims: Record<'hunter' | 'prey', CreatureDimensions> | null = null
   #accentTints: Record<'hunter' | 'prey', number> = { hunter: 0xffffff, prey: 0xffffff }
   #glowTints: Record<'hunter' | 'prey', number> = { hunter: 0xffffff, prey: 0xffffff }
   #plantTextures: Texture[] = []
@@ -168,13 +192,13 @@ export class PixiStage {
     this.#host = host
     this.#app = new Application()
     
-    await this.#app.init({
-      background: '#d8c8a0',
-      antialias: false, // Optimization: Disable MSAA for performance with many agents
-      resizeTo: host,
-      hello: false,
-      preference: 'webgpu',
-      powerPreference: 'high-performance',
+	    await this.#app.init({
+	      background: '#d8c8a0',
+	      antialias: true,
+	      resizeTo: host,
+	      hello: false,
+	      preference: 'webgpu',
+	      powerPreference: 'high-performance',
       autoDensity: true,
       resolution: window.devicePixelRatio || 1,
     })
@@ -276,15 +300,15 @@ export class PixiStage {
     if (!this.#renderer) return
 
     // Helper to safely render a graphic to a texture in v8
-    const bake = (graphics: Graphics): Texture => {
-      const bounds = graphics.getLocalBounds()
-      // Pad slightly to avoid anti-aliasing clipping
-      const width = Math.ceil(bounds.width) + 4
-      const height = Math.ceil(bounds.height) + 4
-      
-      const texture = RenderTexture.create({ width, height })
-      const container = new Container()
-      container.addChild(graphics)
+	    const bake = (graphics: Graphics): Texture => {
+	      const bounds = graphics.getLocalBounds()
+	      // Pad slightly to avoid anti-aliasing clipping
+	      const width = Math.ceil(bounds.width) + 4
+	      const height = Math.ceil(bounds.height) + 4
+	      
+	      const texture = RenderTexture.create({ width, height, resolution: this.#renderer!.resolution })
+	      const container = new Container()
+	      container.addChild(graphics)
       
       // Center the graphics in the texture
       // If graphics were drawn at -24, -24, this shifts them to +2, +2 inside the texture
@@ -304,6 +328,7 @@ export class PixiStage {
     const config = CREATURE_DESIGN_DEFAULT
     const hunterParts = this.#buildAgentGraphics('hunter', config)
     const preyParts = this.#buildAgentGraphics('prey', config)
+    this.#agentDims = { hunter: hunterParts.dims, prey: preyParts.dims }
 
     this.#agentTextures = {
       hunter: {
@@ -352,24 +377,17 @@ export class PixiStage {
     this.#buildGrid()
   }
 
-  #buildAgentGraphics(archetype: 'hunter' | 'prey', config = CREATURE_DESIGN_DEFAULT) {
-    const base = new Graphics()
-    const accent = new Graphics()
-    const glow = new Graphics()
-    const overlay = new Graphics()
-    const profile = VARIANT_PROFILE[archetype]
-    const dims = this.#scaleDimensions(computeDimensions(config, profile))
-    const start = -dims.length / 2
+	  #buildAgentGraphics(archetype: 'hunter' | 'prey', config = CREATURE_DESIGN_DEFAULT) {
+	    const base = new Graphics()
+	    const accent = new Graphics()
+	    const glow = new Graphics()
+	    const overlay = new Graphics()
+	    const profile = VARIANT_PROFILE[archetype]
+	    const dims = this.#scaleDimensions(computeDimensions(config, profile))
+	    const start = -dims.length / 2
 
-    // Tail & torso silhouette (base texture, tinted via family color)
-    base
-      .moveTo(start, 0)
-      .quadraticCurveTo(start - dims.tailLength * 0.2, -dims.thickness * 0.25, start - dims.tailLength, -2)
-      .quadraticCurveTo(start - dims.tailLength * 0.25, dims.thickness * 0.35, start, dims.thickness * 0.18)
-      .fill({ color: 0xfafafa, alpha: 0.95 })
-    base
-      .roundRect(-dims.length / 2, -dims.thickness / 2, dims.length, dims.thickness, dims.thickness * 0.45)
-      .fill(0xffffff)
+    // Torso silhouette (base texture, tinted via family color)
+    base.roundRect(start, -dims.thickness / 2, dims.length, dims.thickness, dims.thickness * 0.45).fill(0xffffff)
     base
       .roundRect(-dims.length * 0.35, -dims.thickness * 0.2, dims.length * 0.55, dims.thickness * 0.4, dims.thickness * 0.25)
       .fill(0xe5e7eb)
@@ -379,85 +397,27 @@ export class PixiStage {
     const headHeight = dims.headSize * 0.65
     const headX = dims.headAnchor - headWidth / 2
     base.roundRect(headX, -headHeight / 2, headWidth, headHeight, headHeight * 0.65).fill(0xffffff)
-    base
-      .roundRect(headX + headWidth * 0.35, -headHeight / 2, headWidth * 0.45, headHeight * 0.55, headHeight * 0.35)
-      .fill(0xf4f4f5)
+	    base
+	      .roundRect(headX + headWidth * 0.35, -headHeight / 2, headWidth * 0.45, headHeight * 0.55, headHeight * 0.35)
+	      .fill(0xf4f4f5)
 
-    // Accent plating + crest (tinted per archetype accent color)
-    const crestLength = dims.length * 0.4
-    accent
-      .moveTo(-crestLength / 2, -dims.thickness / 2)
-      .quadraticCurveTo(0, -dims.thickness / 2 - dims.crestHeight * 0.6, crestLength / 2, -dims.thickness / 2)
-      .stroke({ color: 0xffffff, width: 2 })
+	    // Accent/glow decals intentionally omitted (cosmetic lines/arcs removed).
+	    void accent
+	    void glow
 
-    const segmentCount = Math.max(4, dims.platingSegments)
-    const segmentWidth = dims.length / segmentCount
-    for (let i = 0; i < segmentCount; i++) {
-      const x = start + i * segmentWidth
-      const arcHeight = dims.crestHeight * 0.2 * Math.sin((i / segmentCount) * Math.PI)
-      accent
-        .moveTo(x, dims.thickness / 2 - 0.5)
-        .quadraticCurveTo(x + segmentWidth / 2, dims.thickness / 2 + arcHeight, x + segmentWidth, dims.thickness / 2 - 0.5)
-        .stroke({ color: 0xffffff, width: 1.5, alpha: 0.9 })
-    }
+	    // Behaviour overlay (tinted per agent mode)
+	    overlay
+	      .roundRect(start, -dims.thickness / 2, dims.length, dims.thickness, dims.thickness * 0.45)
+	      .fill({ color: 0xffffff, alpha: 0.28 })
 
-    accent
-      .moveTo(start - dims.tailLength * 0.4, -dims.thickness * 0.15)
-      .quadraticCurveTo(start - dims.tailLength * 0.15, -dims.thickness * 0.45, start + dims.tailLength * 0.1, -dims.thickness * 0.05)
-      .stroke({ color: 0xffffff, width: 1.8 })
-
-    // Glow decal (tinted using glow color)
-    const glowRadius = Math.max(6, dims.headSize * (0.8 + config.lumens * 0.6))
-    const glowX = dims.headAnchor + glowRadius * 0.15
-    const glowY = -glowRadius * 0.2
-    glow.circle(glowX, glowY, glowRadius).fill({ color: 0xffffff, alpha: 0.45 })
-    glow.circle(glowX + glowRadius * 0.2, glowY - glowRadius * 0.1, glowRadius * 0.45).fill({ color: 0xffffff, alpha: 0.9 })
-
-    // Behaviour overlay (tinted per agent mode)
-    this.#drawOverlayPattern(overlay, dims, config.patternStyle)
-    const eyeRadius = Math.max(2, dims.headSize * 0.18)
-    overlay.circle(glowX + eyeRadius * 0.35, glowY - eyeRadius * 0.2, eyeRadius).fill({ color: 0xffffff, alpha: 0.95 })
-    overlay.circle(glowX + eyeRadius * 0.8, glowY - eyeRadius * 0.5, eyeRadius * 0.35).fill({ color: 0xffffff, alpha: 0.85 })
-
-    return { base, accent, glow, overlay }
-  }
+	    return { base, accent, glow, overlay, dims }
+	  }
 
   #drawOverlayPattern(overlay: Graphics, dims: CreatureDimensions, patternStyle: CreaturePatternStyle) {
-    if (patternStyle === 'dapples') {
-      const dots = 4
-      for (let i = 0; i < dots; i++) {
-        const offsetX = -dims.length / 2 + (i + 1) * (dims.length / (dots + 1))
-        const offsetY = (i % 2 === 0 ? -1 : 1) * dims.thickness * 0.25
-        const radius = Math.max(1.5, dims.thickness * (0.15 + (i % 3) * 0.02))
-        overlay.circle(offsetX, offsetY, radius).fill({ color: 0xffffff, alpha: 0.75 })
-      }
-      return
-    }
-
-    if (patternStyle === 'spines') {
-      const segments = Math.max(3, Math.round(dims.length / 6))
-      const top = -dims.thickness / 2
-      for (let i = 0; i < segments; i++) {
-        const progress = i / segments
-        const x = -dims.length / 2 + progress * dims.length
-        const height = dims.crestHeight * 0.4 * (1 - Math.abs(progress - 0.5))
-        overlay
-          .moveTo(x, top)
-          .lineTo(x + 4, top - height)
-          .lineTo(x + 8, top)
-          .lineTo(x, top)
-          .fill({ color: 0xffffff, alpha: 0.9 })
-      }
-      return
-    }
-
-    const spacing = dims.length / (4 + dims.length * 0.08)
-    for (let x = -dims.length / 2 + spacing; x < dims.length / 2; x += spacing) {
-      overlay
-        .moveTo(x - spacing * 0.2, -dims.thickness / 2)
-        .lineTo(x + spacing * 0.45, dims.thickness / 2)
-        .stroke({ color: 0xffffff, width: 1.4, alpha: 0.85 })
-    }
+    // Intentionally blank: legacy patterning (e.g. zig-zags) removed in favor of organ-driven visuals.
+    void overlay
+    void dims
+    void patternStyle
   }
 
   #scaleDimensions(dims: CreatureDimensions): CreatureDimensions {
@@ -566,6 +526,14 @@ export class PixiStage {
       entry.container.position.set(agent.position.x, agent.position.y)
       entry.container.scale.set(scale)
       entry.container.rotation = agent.heading
+      const speed = Math.sqrt(agent.velocity.x * agent.velocity.x + agent.velocity.y * agent.velocity.y)
+      entry.moveIntensity = clamp(speed / Math.max(agent.dna.baseSpeed || 1, 1), 0, 1)
+      if (typeof agent.gaitPhase === 'number' && Number.isFinite(agent.gaitPhase)) {
+        entry.gaitPhase = agent.gaitPhase
+        entry.gaitPhaseFromSim = true
+      } else {
+        entry.gaitPhaseFromSim = false
+      }
 
       const fleeing = agent.mode === 'flee' && this.#debugMoodOverlay
       if (fleeing) {
@@ -612,6 +580,7 @@ export class PixiStage {
     const accent = new Sprite()
     const glow = new Sprite()
     const overlay = new Sprite()
+    const organs = new Graphics()
     const limbs = new Graphics()
     const fins = new Graphics()
     const wings = new Graphics()
@@ -624,7 +593,7 @@ export class PixiStage {
     glow.alpha = 0.45
     accent.alpha = 0.95
 
-    container.addChild(glow, limbs, fins, wings, base, accent, overlay)
+    container.addChild(glow, limbs, fins, wings, base, accent, organs, overlay)
 
     const entry: AgentSpriteData = {
       container,
@@ -632,12 +601,23 @@ export class PixiStage {
       accent,
       glow,
       overlay,
+      organs,
       limbs,
       fins,
       wings,
       archetype,
       pulsePhase: Math.random() * Math.PI * 2,
       wobbleSpeed: 0.5 + Math.random() * 0.8,
+      gaitPhase: Math.random() * Math.PI * 2,
+      gaitPhaseFromSim: false,
+      turnIntensity: 0,
+      bodyOffsetX: 0,
+      bodyOffsetY: 0,
+      moveIntensity: 0,
+      landVisuals: null,
+      eyePlacements: [],
+      earPlacements: [],
+      nosePlacements: [],
       active: true,
     }
     this.#configureAgentSprite(entry, archetype)
@@ -654,6 +634,18 @@ export class PixiStage {
     entry.accent.tint = this.#accentTints[archetype]
     entry.glow.tint = this.#glowTints[archetype]
     entry.archetype = archetype
+    entry.landVisuals = null
+    entry.eyePlacements = []
+    entry.earPlacements = []
+    entry.nosePlacements = []
+    entry.moveIntensity = 0
+    entry.gaitPhaseFromSim = false
+    entry.lastHeading = undefined
+    entry.turnIntensity = 0
+    entry.bodyOffsetX = 0
+    entry.bodyOffsetY = 0
+    entry.organs.clear()
+    entry.organs.visible = !this.#lightweightVisuals
     entry.limbs.clear()
     entry.limbs.visible = !this.#lightweightVisuals
     entry.fins.clear()
@@ -962,9 +954,18 @@ export class PixiStage {
   }
 
   setDebugOverlay(enabled: boolean) {
-    this.#miniMapOverlay.visible = enabled
+    // Legacy master toggle: enable both mood and organ debug.
+    this.setDebugMoodOverlay(enabled)
+    this.setDebugOrganOverlay(enabled)
+  }
+
+  setDebugMoodOverlay(enabled: boolean) {
     this.#debugMoodOverlay = enabled
-    // Force a render update for the overlay immediately
+  }
+
+  setDebugOrganOverlay(enabled: boolean) {
+    this.#debugOrganOverlay = enabled
+    this.#miniMapOverlay.visible = enabled
     if (this.#lastSnapshot) this.#renderDebugOverlay()
   }
 
@@ -987,12 +988,45 @@ export class PixiStage {
     for (const entry of this.#agentSprites.values()) {
       if (!entry.container.visible) continue; // Skip off-screen logic
 
-      entry.pulsePhase += entry.wobbleSpeed * dt * 0.05
-      const pulse = 1 + Math.sin(entry.pulsePhase) * 0.04
+      const moving = entry.moveIntensity > 0.04
+      const heading = entry.container.rotation
+      const last = entry.lastHeading
+      const deltaHeading = last === undefined ? 0 : angleDiff(heading, last) / Math.max(dt, 0.001)
+      entry.lastHeading = heading
+      entry.turnIntensity = clamp(Math.abs(deltaHeading) / 0.65, 0, 1)
+      const locomotionIntensity = clamp(Math.max(entry.moveIntensity, entry.turnIntensity * 0.75), 0, 1)
+
+      entry.pulsePhase += entry.wobbleSpeed * dt * (moving ? 0.02 : 0.045)
+      const pulse = 1 + Math.sin(entry.pulsePhase) * (moving ? 0.01 : 0.03)
       entry.base.scale.set(pulse)
       entry.accent.scale.set(pulse)
-      entry.glow.alpha = 0.35 + (Math.sin(entry.pulsePhase * 1.1) + 1) * 0.25
-      entry.overlay.alpha = 0.45 + (Math.sin(entry.pulsePhase * 0.9) + 1) * 0.3
+
+      // If the sim provides gaitPhase, render directly from it; otherwise locally advance for preview.
+      if (!entry.gaitPhaseFromSim) {
+        entry.gaitPhase += dt * (0.04 + locomotionIntensity * 0.25)
+      }
+      if (entry.landVisuals && entry.limbs.visible) this.#renderLandLimbs(entry)
+
+      // Subtle body bob/shift relative to legs to sell planted steps and turning.
+      if (entry.landVisuals) {
+        const { dims, gaitStyle } = entry.landVisuals
+        const bob = Math.sin(entry.gaitPhase) * dims.length * 0.012 * locomotionIntensity * (0.7 + (1 - gaitStyle) * 0.35)
+        const sway =
+          Math.cos(entry.gaitPhase * 2) * dims.thickness * 0.006 * entry.turnIntensity * (0.6 + gaitStyle * 0.4)
+        entry.bodyOffsetX = bob
+        entry.bodyOffsetY = sway
+      } else {
+        entry.bodyOffsetX = 0
+        entry.bodyOffsetY = 0
+      }
+      entry.base.position.set(entry.bodyOffsetX, entry.bodyOffsetY)
+      entry.accent.position.set(entry.bodyOffsetX, entry.bodyOffsetY)
+      entry.glow.position.set(entry.bodyOffsetX, entry.bodyOffsetY)
+      entry.overlay.position.set(entry.bodyOffsetX, entry.bodyOffsetY)
+      entry.organs.position.set(entry.bodyOffsetX, entry.bodyOffsetY)
+
+      entry.glow.alpha = 0.3 + (Math.sin(entry.pulsePhase * 1.1) + 1) * 0.22
+      entry.overlay.alpha = moving ? 0.45 : 0.55
     }
 
     for (const entry of this.#plantSprites.values()) {
@@ -1097,53 +1131,400 @@ export class PixiStage {
     if (this.#lightweightVisuals) {
       entry.limbs.visible = false
       entry.limbs.clear()
+      entry.organs.visible = false
+      entry.organs.clear()
+      entry.landVisuals = null
+      entry.eyePlacements = []
+      entry.earPlacements = []
+      entry.nosePlacements = []
       return
     }
     if (!featureFlags.landBodyPlan) {
       entry.limbs.visible = false
       entry.limbs.clear()
+      entry.organs.visible = false
+      entry.organs.clear()
+      entry.landVisuals = null
+      entry.eyePlacements = []
+      entry.earPlacements = []
+      entry.nosePlacements = []
       return
     }
     if (agent.dna.biome !== 'land' || !agent.dna.bodyPlan) {
       entry.limbs.visible = false
       entry.limbs.clear()
+      entry.organs.visible = false
+      entry.organs.clear()
+      entry.landVisuals = null
+      entry.eyePlacements = []
+      entry.earPlacements = []
+      entry.nosePlacements = []
+      return
+    }
+
+    const dims = this.#agentDims?.[entry.archetype]
+    if (!dims) {
+      entry.limbs.visible = false
+      entry.limbs.clear()
+      entry.organs.visible = false
+      entry.organs.clear()
+      entry.landVisuals = null
+      entry.eyePlacements = []
+      entry.earPlacements = []
+      entry.nosePlacements = []
       return
     }
 
     const legs = agent.dna.bodyPlan.limbs.filter((limb) => limb.kind === 'leg')
-    if (!legs.length) {
+    const legMounts = legs.flatMap((leg) => {
+      const mounts = leg.layout?.mounts ?? []
+      return mounts.slice(0, Math.max(0, Math.floor(leg.count))).map((mount) => ({
+        x: mount.x,
+        side: mount.side,
+        size: leg.size,
+        gaitStyle: leg.gaitStyle,
+      }))
+    })
+    const legCount = legMounts.length
+    const legSize =
+      legCount > 0
+        ? legs.reduce((sum, leg) => sum + leg.size * Math.max(0, leg.count), 0) / Math.max(1, legs.reduce((sum, leg) => sum + Math.max(0, leg.count), 0))
+        : 0
+    const gaitStyle =
+      legCount > 0
+        ? legs.reduce((sum, leg) => sum + leg.gaitStyle * Math.max(0, leg.count), 0) / Math.max(1, legs.reduce((sum, leg) => sum + Math.max(0, leg.count), 0))
+        : 0.5
+
+    const tail = agent.dna.bodyPlan.appendages.find((appendage) => appendage.kind === 'tail')
+    const tailCount = tail && tail.kind === 'tail' ? Math.max(0, Math.floor((tail as any).count ?? 1)) : 0
+    const tailSize = tail && tail.kind === 'tail' ? tail.size : 0
+    const tailMounts =
+      tail && tail.kind === 'tail' ? (tail.layout?.mounts ?? []).slice(0, tailCount) : []
+
+    const eyes = agent.dna.bodyPlan.senses.filter((sense) => sense.sense === 'eye')
+    const ears = agent.dna.bodyPlan.senses.filter((sense) => sense.sense === 'ear')
+    const noses = agent.dna.bodyPlan.senses.filter((sense) => sense.sense === 'nose')
+    entry.eyePlacements = eyes.flatMap((eye) =>
+      (eye.layout?.placements ?? []).slice(0, Math.max(0, Math.floor(eye.count))),
+    )
+    entry.earPlacements = ears.flatMap((ear) =>
+      (ear.layout?.placements ?? []).slice(0, Math.max(0, Math.floor(ear.count))),
+    )
+    entry.nosePlacements = noses.flatMap((nose) =>
+      (nose.layout?.placements ?? []).slice(0, Math.max(0, Math.floor(nose.count))),
+    )
+
+    const limbColor = lightenColor(parseColor(agent.dna.familyColor), 0.2)
+    entry.landVisuals = {
+      dims,
+      legMounts,
+      legSize,
+      gaitStyle,
+      tailMounts,
+      tailSize,
+      limbColor,
+    }
+
+    // Static organs (eyes, etc).
+    this.#renderOrganOverlay(entry)
+
+    // Animated limbs (legs/tail) are drawn in the ticker to match movement speed.
+    entry.limbs.visible = !this.#lightweightVisuals
+    if (entry.limbs.visible && entry.moveIntensity <= 0.01) {
+      this.#renderLandLimbs(entry)
+    }
+  }
+
+  #renderOrganOverlay(entry: AgentSpriteData) {
+    if (this.#lightweightVisuals || !entry.landVisuals) {
+      entry.organs.visible = false
+      entry.organs.clear()
+      return
+    }
+    const { dims } = entry.landVisuals
+    const debug = this.#debugOrganOverlay
+    entry.organs.visible =
+      entry.eyePlacements.length > 0 || entry.earPlacements.length > 0 || entry.nosePlacements.length > 0
+    entry.organs.clear()
+    if (!entry.organs.visible) return
+
+	    const eyeRadius = Math.max(1.4, dims.headSize * 0.12)
+	    const pupilRadius = Math.max(0.8, eyeRadius * 0.45)
+	    const earRadius = Math.max(1.4, eyeRadius * 0.95)
+	    const noseRadius = Math.max(1.2, eyeRadius * 0.9)
+
+    for (const eye of entry.eyePlacements) {
+      const x = eye.x * dims.length
+      const y = eye.y * dims.thickness
+      entry.organs.circle(x, y, eyeRadius).fill({ color: 0xf8fafc, alpha: 0.95 })
+      entry.organs.circle(x, y, pupilRadius).fill({ color: 0x0f172a, alpha: 0.9 })
+      if (debug) {
+        const dirLen = dims.length * 0.45
+        entry.organs
+          .moveTo(x, y)
+          .lineTo(x + Math.cos(eye.angle) * dirLen, y + Math.sin(eye.angle) * dirLen)
+          .stroke({ color: 0x0f172a, width: 1, alpha: 0.55 })
+      }
+    }
+
+	    for (const ear of entry.earPlacements) {
+	      const x = ear.x * dims.length
+	      const y = ear.y * dims.thickness
+	      const fillAlpha = debug ? 0.75 : 0.55
+	      entry.organs.circle(x, y, earRadius).fill({ color: 0x38bdf8, alpha: fillAlpha })
+	      entry.organs.circle(x, y, earRadius * 1.18).stroke({ color: 0x0f172a, width: 1, alpha: debug ? 0.45 : 0.28 })
+	      entry.organs.circle(x, y, earRadius * 0.45).fill({ color: 0xf8fafc, alpha: debug ? 0.35 : 0.18 })
+	    }
+    for (const nose of entry.nosePlacements) {
+      const x = nose.x * dims.length
+      const y = nose.y * dims.thickness
+      entry.organs.circle(x, y, noseRadius).fill({ color: 0xf97316, alpha: debug ? 0.72 : 0.3 })
+      if (debug) {
+        const dirLen = dims.length * 0.18
+        entry.organs
+          .moveTo(x, y)
+          .lineTo(x + Math.cos(nose.angle) * dirLen, y + Math.sin(nose.angle) * dirLen)
+          .stroke({ color: 0x7c2d12, width: 1, alpha: 0.5 })
+      }
+    }
+
+    if (debug) {
+      // Mount points (legs/tails) for quick validation.
+      const { legMounts, tailMounts } = entry.landVisuals
+      const mountRadius = Math.max(1.1, dims.thickness * 0.06)
+      entry.organs.lineStyle(1, 0x0f172a, 0.35)
+      for (const mount of legMounts) {
+        const x = mount.x * dims.length
+        const y = mount.side * dims.thickness * 0.34
+        entry.organs.circle(x, y, mountRadius).stroke({ color: 0x0f172a, alpha: 0.45, width: 1 })
+      }
+      for (const mount of tailMounts) {
+        const x = mount.x * dims.length
+        const y = mount.y * dims.thickness
+        entry.organs.circle(x, y, mountRadius).stroke({ color: 0x0f172a, alpha: 0.45, width: 1 })
+      }
+    }
+  }
+
+	  #renderLandLimbs(entry: AgentSpriteData) {
+    if (this.#lightweightVisuals || !entry.landVisuals) {
       entry.limbs.visible = false
       entry.limbs.clear()
       return
     }
-
-    const color = lightenColor(parseColor(agent.dna.familyColor), 0.2)
+    const { dims, legMounts, legSize, gaitStyle, tailMounts, tailSize, limbColor } = entry.landVisuals
     entry.limbs.visible = true
     entry.limbs.clear()
-    entry.limbs.lineStyle(2, color, 0.8)
 
-    const placementAnchor: Record<string, number> = {
-      front: 0.3,
-      mid: 0,
-      rear: -0.3,
-      mixed: 0.15,
+    const speed = clamp(entry.moveIntensity, 0, 1)
+    const turn = clamp(entry.turnIntensity, 0, 1)
+    const locomotionIntensity = clamp(Math.max(speed, turn * 0.75), 0, 1)
+    const phase = entry.gaitPhase
+    const stride = dims.length * (0.03 + speed * (0.13 + gaitStyle * 0.06) + turn * 0.06)
+    const baseLegReach = dims.thickness * (0.28 + legSize * 0.36)
+
+    const baseWidth = Math.max(1.1, 1.1 + legSize * 1.7)
+    entry.limbs.lineStyle(baseWidth, limbColor, 0.9)
+
+    // Tail sway (better visible while moving).
+    if (tailMounts.length > 0 && tailSize > 0) {
+      const tailLen = dims.length * (0.22 + tailSize * 0.38)
+      const swayAmp = (0.12 + locomotionIntensity * 0.55) * (0.6 + tailSize * 0.6)
+      for (let i = 0; i < tailMounts.length; i++) {
+        const mount = tailMounts[i]!
+        const baseX = entry.bodyOffsetX + mount.x * dims.length
+        const baseY = entry.bodyOffsetY + mount.y * dims.thickness
+        const offset = i * 0.8
+        const sway = Math.sin(phase * 0.9 + offset) * swayAmp
+        const angle = (mount.angle ?? Math.PI) + sway
+        const tipX = baseX + Math.cos(angle) * tailLen
+        const tipY = baseY + Math.sin(angle) * tailLen
+        const midX = (baseX + tipX) / 2 + Math.cos(angle + Math.PI / 2) * tailLen * 0.12
+        const midY = (baseY + tipY) / 2 + Math.sin(angle + Math.PI / 2) * tailLen * 0.12
+        entry.limbs.moveTo(baseX, baseY)
+        entry.limbs.quadraticCurveTo(midX, midY, tipX, tipY)
+      }
     }
 
-    legs.forEach((leg) => {
-      const anchor = placementAnchor[leg.placement] ?? 0
-      const groupSpan = leg.count > 1 ? 12 : 0
-      for (let i = 0; i < leg.count; i++) {
-        const offset =
-          leg.count > 1 ? -groupSpan / 2 + (groupSpan / Math.max(leg.count - 1, 1)) * i : 0
-        const x = anchor * 24 + offset
-        const kneeY = 6 + leg.size * 8
-        const footY = 20 + leg.size * 14
-        const forward = anchor >= 0 ? 6 : -6
-        entry.limbs.moveTo(x, 8)
-        entry.limbs.lineTo(x + forward * 0.4, kneeY)
-        entry.limbs.lineTo(x + forward, footY)
+    const tau = Math.PI * 2
+
+    type GaitKind = 'biped' | 'walk' | 'trot' | 'pace' | 'bound' | 'gallop' | 'tripod' | 'wave'
+    const legCount = legMounts.length
+    let gaitKind: GaitKind = 'wave'
+    if (legCount === 2) gaitKind = 'biped'
+    else if (legCount === 4) {
+      if (locomotionIntensity > 0.85 || gaitStyle > 0.9) gaitKind = 'bound'
+      else if (locomotionIntensity > 0.72 || gaitStyle > 0.78) gaitKind = 'gallop'
+      else if (gaitStyle > 0.55) gaitKind = 'trot'
+      else if (gaitStyle > 0.38) gaitKind = 'pace'
+      else gaitKind = 'walk'
+    } else if (legCount === 6 && gaitStyle > 0.52) {
+      gaitKind = 'tripod'
+    } else if (legCount >= 7 && gaitStyle < 0.35) {
+      gaitKind = 'wave'
+    }
+
+    const gaitDuty = (() => {
+      switch (gaitKind) {
+        case 'biped':
+          return clamp(0.6 - locomotionIntensity * 0.18, 0.42, 0.7)
+        case 'walk':
+          return clamp(0.74 - locomotionIntensity * 0.22, 0.52, 0.8)
+        case 'trot':
+          return clamp(0.6 - locomotionIntensity * 0.18, 0.42, 0.66)
+        case 'pace':
+          return clamp(0.62 - locomotionIntensity * 0.18, 0.44, 0.68)
+        case 'bound':
+          return clamp(0.5 - locomotionIntensity * 0.16, 0.35, 0.58)
+        case 'gallop':
+          return clamp(0.46 - locomotionIntensity * 0.14, 0.32, 0.54)
+        case 'tripod':
+          return clamp(0.58 - locomotionIntensity * 0.16, 0.4, 0.65)
+        case 'wave':
+        default:
+          return clamp(0.68 - locomotionIntensity * 0.2, 0.46, 0.76)
       }
-    })
+    })()
+
+    const frontX = stride * (0.6 + gaitStyle * 0.12)
+    const backX = -stride * (0.44 + (1 - gaitStyle) * 0.06)
+    const footRadius = Math.max(1.2, baseWidth * 0.75)
+    const plantedAlpha = clamp(0.55 + locomotionIntensity * 0.35, 0.35, 0.95)
+    const swingAlpha = clamp(0.22 + locomotionIntensity * 0.25, 0.18, 0.55)
+    const footColor = lightenColor(limbColor, -0.1)
+
+    const gaitOffset = (mount: (typeof legMounts)[number], index: number) => {
+      if (gaitKind === 'biped') {
+        return mount.side > 0 ? 0 : Math.PI
+      }
+      if (gaitKind === 'walk' && legCount === 4) {
+        const front = mount.x > 0.08
+        // 4-beat walk: LF -> RR -> RF -> LR
+        const phaseIndex =
+          front && mount.side < 0 ? 0 : !front && mount.side > 0 ? 1 : front && mount.side > 0 ? 2 : 3
+        return (phaseIndex * tau) / 4
+      }
+      if (gaitKind === 'trot' && legCount === 4) {
+        const front = mount.x > 0.08
+        const diagonalA = (front && mount.side < 0) || (!front && mount.side > 0)
+        return diagonalA ? 0 : Math.PI
+      }
+      if (gaitKind === 'pace' && legCount === 4) {
+        return mount.side < 0 ? 0 : Math.PI
+      }
+      if ((gaitKind === 'bound' || gaitKind === 'gallop') && legCount >= 4) {
+        const front = mount.x > 0.08
+        const lead = mount.side > 0 ? 0 : 1
+        const base = front ? 0 : Math.PI * 0.9
+        return base + lead * Math.PI * 0.12 + mount.x * Math.PI * 0.22
+      }
+      if (gaitKind === 'tripod' && legCount === 6) {
+        // Classify legs into front/mid/rear per side by sorting along x.
+        const sameSide = legMounts
+          .map((m, idx) => ({ m, idx }))
+          .filter((item) => item.m.side === mount.side)
+          .sort((a, b) => b.m.x - a.m.x)
+        const posIndex = sameSide.findIndex((item) => item.idx === index)
+        const group =
+          mount.side < 0 ? (posIndex % 2 === 0 ? 0 : 1) : (posIndex % 2 === 1 ? 0 : 1)
+        return group === 0 ? 0 : Math.PI
+      }
+      // Default: metachronal wave, ordered by x (front->rear) and alternating sides.
+      const ordered = legMounts
+        .map((m, idx) => ({ m, idx }))
+        .sort((a, b) => {
+          const dx = b.m.x - a.m.x
+          if (Math.abs(dx) > 0.01) return dx
+          return a.m.side - b.m.side
+        })
+      const rank = ordered.findIndex((item) => item.idx === index)
+      return (rank * tau) / Math.max(1, legCount) + (mount.side > 0 ? 0 : Math.PI * 0.08)
+    }
+
+    const solveTwoSegmentLeg = (
+      hipX: number,
+      hipY: number,
+      footX: number,
+      footY: number,
+      femur: number,
+      tibia: number,
+      kneeSign: number,
+      extraBend: number,
+    ) => {
+      const dx = footX - hipX
+      const dy = footY - hipY
+      const dist = Math.sqrt(dx * dx + dy * dy) || 0.001
+      const maxReach = Math.max(0.001, (femur + tibia) * 0.98)
+      const d = clamp(dist, 0.001, maxReach)
+      const dirX = dx / dist
+      const dirY = dy / dist
+      const cosTheta = clamp((femur * femur + d * d - tibia * tibia) / (2 * femur * d), -1, 1)
+      const proj = femur * cosTheta
+      const h = femur * Math.sqrt(Math.max(0, 1 - cosTheta * cosTheta)) * (1 + extraBend)
+      const perpX = -dirY
+      const perpY = dirX
+      return {
+        kneeX: hipX + dirX * proj + perpX * h * kneeSign,
+        kneeY: hipY + dirY * proj + perpY * h * kneeSign,
+      }
+    }
+
+    for (let i = 0; i < legMounts.length; i++) {
+      const mount = legMounts[i]!
+      const hipX = entry.bodyOffsetX + mount.x * dims.length
+      const hipY = entry.bodyOffsetY + mount.side * dims.thickness * 0.34
+
+      const offset = gaitOffset(mount, i)
+      const p = wrapPhase(phase + offset)
+      const stanceEnd = gaitDuty * tau
+      const planted = p < stanceEnd && locomotionIntensity > 0.04
+      const t = planted ? (stanceEnd <= 0.0001 ? 0 : p / stanceEnd) : ((p - stanceEnd) / Math.max(tau - stanceEnd, 0.0001))
+
+      const localStride =
+        stride *
+        (0.85 +
+          (mount.x > 0.12 ? 0.12 : mount.x < -0.12 ? -0.08 : 0) +
+          clamp(mount.size, 0.1, 2) * 0.12)
+      const footFrontX = localStride * (0.62 + mount.gaitStyle * 0.1)
+      const footBackX = -localStride * (0.44 + (1 - mount.gaitStyle) * 0.06)
+
+      const footX =
+        planted
+          ? hipX + footFrontX + (footBackX - footFrontX) * t
+          : hipX + footBackX + (footFrontX - footBackX) * t
+
+      const reach = baseLegReach * (0.92 + clamp(mount.size, 0.1, 2) * 0.28)
+      const tuck = planted ? 1 : 0.66
+      const footY = hipY + mount.side * reach * tuck + (planted ? 0 : Math.cos(p) * reach * 0.06 * mount.side)
+
+      const swingLift = planted ? 0 : Math.sin(Math.PI * t)
+      const femur = reach * (0.6 + clamp(mount.size, 0.1, 2) * 0.12)
+      const tibia = reach * (0.55 + clamp(mount.size, 0.1, 2) * 0.18)
+      const kneeSign = -mount.side
+      const { kneeX, kneeY } = solveTwoSegmentLeg(
+        hipX,
+        hipY,
+        footX,
+        footY,
+        femur,
+        tibia,
+        kneeSign,
+        swingLift * (0.45 + mount.gaitStyle * 0.25),
+      )
+
+      const width = Math.max(0.9, baseWidth * (0.7 + clamp(mount.size, 0.1, 2) * 0.35))
+      entry.limbs.lineStyle(width, limbColor, planted ? plantedAlpha : swingAlpha)
+      entry.limbs.moveTo(hipX, hipY)
+      entry.limbs.lineTo(kneeX, kneeY)
+      entry.limbs.lineTo(footX, footY)
+
+      if (planted) {
+        entry.limbs.circle(footX, footY, footRadius).fill({ color: footColor, alpha: 0.7 })
+        entry.limbs.circle(footX, footY, footRadius * 1.9).stroke({ color: footColor, width: 1, alpha: 0.12 })
+      } else if (locomotionIntensity > 0.4) {
+        entry.limbs.circle(footX, footY, footRadius * 0.75).fill({ color: footColor, alpha: 0.25 })
+      }
+    }
   }
 
   #updateFinOverlay(entry: AgentSpriteData, agent: AgentState) {
@@ -1456,6 +1837,17 @@ function lightenColor(color: number, amount: number) {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
+}
+
+function wrapPhase(phase: number) {
+  const tau = Math.PI * 2
+  if (!Number.isFinite(phase)) return 0
+  return ((phase % tau) + tau) % tau
+}
+
+function angleDiff(a: number, b: number) {
+  const d = a - b
+  return Math.atan2(Math.sin(d), Math.cos(d))
 }
 
 export const pixiStage = new PixiStage()

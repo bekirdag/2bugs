@@ -297,7 +297,14 @@ export function stepWorld(ctx: SimulationContext, dtMs: number, controls: Contro
   measure('circadian', () => circadianSystem(ctx, dt))
   measure('lifecycle', () => lifecycleSystem(ctx))
   measure('movement', () =>
-    movementSystem(ctx, dt, controls.speed, controls.curiosityBias ?? 0, controls.fatSpeedPenalty ?? 1),
+    movementSystem(
+      ctx,
+      dt,
+      controls.speed,
+      controls.curiosityBias ?? 0,
+      controls.fatSpeedPenalty ?? 1,
+      controls,
+    ),
   )
 	  measure('interaction', () =>
 	    interactionSystem(

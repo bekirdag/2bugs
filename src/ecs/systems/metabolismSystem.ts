@@ -17,7 +17,14 @@ const MODE = {
 
 // The sim's current energy units were tuned for much shorter-lived agents.
 // Scale metabolic drains down so agents can survive long enough to exhibit lifetime behavior.
-const ENERGY_DRAIN_SCALE = 1 / 50
+const ENERGY_DRAIN_SCALE = 1/8
+
+const MORPHOLOGY_COST = {
+  leg: 0.09,
+  tail: 0.08,
+  fin: 0.07,
+  wing: 0.1,
+} as const
 
 export function metabolismSystem(
   ctx: SimulationContext,
@@ -26,6 +33,8 @@ export function metabolismSystem(
 ): number[] {
   const fallen: number[] = []
   const speed = controls.speed ?? 1
+  const senseUpkeepScale = clamp(controls.senseUpkeepScale ?? 1, 0, 5)
+  const morphologyUpkeepScale = clamp(controls.morphologyUpkeepScale ?? 1, 0, 5)
 
   ctx.agents.forEach((entity, id) => {
     const mode = ModeState.mode[entity]
@@ -57,8 +66,27 @@ export function metabolismSystem(
 
     const senseDrain =
       featureFlags.sensesFromBodyPlan && DNA.senseUpkeep[entity]
-        ? (DNA.senseUpkeep[entity] ?? 0) * dt * speed * 0.25 * sizeMetabolicFactor
+        ? (DNA.senseUpkeep[entity] ?? 0) * dt * speed * 0.25 * sizeMetabolicFactor * senseUpkeepScale
         : 0
+    const morphologyDrain = genome?.bodyPlan
+      ? (() => {
+          const plan = genome.bodyPlan
+          const legCount = biome === 'land' && featureFlags.landBodyPlan && profile?.land ? Math.max(0, profile.land.legCount) : 0
+          const tailCount = plan.appendages.reduce((sum, appendage) => {
+            if (appendage.kind !== 'tail') return sum
+            const count = Math.max(0, Math.floor((appendage as any).count ?? 1))
+            return sum + count
+          }, 0)
+          const finCount = plan.appendages.reduce((sum, appendage) => (appendage.kind === 'fin' ? sum + appendage.count : sum), 0)
+          const wingCount = plan.limbs.reduce((sum, limb) => (limb.kind === 'wing' ? sum + limb.count : sum), 0)
+          const raw =
+            legCount * MORPHOLOGY_COST.leg +
+            tailCount * MORPHOLOGY_COST.tail +
+            finCount * MORPHOLOGY_COST.fin +
+            wingCount * MORPHOLOGY_COST.wing
+          return raw * dt * speed * 0.25 * sizeMetabolicFactor * morphologyUpkeepScale
+        })()
+      : 0
     let locomotionDrain = 0
     if (biome === 'water' && featureFlags.aquaticBodyPlan && profile?.water) {
       locomotionDrain = (profile.water.thrust + profile.water.turnRate) * dt * speed * 0.4 * sizeMetabolicFactor
@@ -79,7 +107,7 @@ export function metabolismSystem(
     const isPregnant = ctx.pregnancies.has(id)
     const pregnancyCost = isPregnant ? (DNA.gestationCost[entity] ?? 5) * dt * speed * 0.3 : 0
 
-    const totalDrain = burnRate + senseDrain + locomotionDrain + runDrain + massPenalty + pregnancyCost
+    const totalDrain = burnRate + senseDrain + morphologyDrain + locomotionDrain + runDrain + massPenalty + pregnancyCost
     const scaledDrain = totalDrain * ENERGY_DRAIN_SCALE
     Energy.value[entity] -= scaledDrain
 

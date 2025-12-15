@@ -17,6 +17,11 @@ export const Velocity = defineComponent({
   y: Types.f32,
 })
 
+// Runtime angular velocity (used by physics-like land locomotion).
+export const AngularVelocity = defineComponent({
+  omega: Types.f32,
+})
+
 export const Heading = defineComponent({
   angle: Types.f32,
   turnRate: Types.f32,
@@ -157,4 +162,9 @@ export const Body = defineComponent({
 
 export const AgentRef = defineComponent({
   id: Types.ui32,
+})
+
+// Runtime-only locomotion state (not serialized into snapshots).
+export const LocomotionState = defineComponent({
+  gaitPhase: Types.f32,
 })

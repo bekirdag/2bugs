@@ -117,7 +117,12 @@ $: {
     fps = latestTelemetry.fps ?? fps
   }
 }
-	  $: pixiStage.setDebugOverlay?.(controls.debugOverlay)
+	  $: {
+	    const mood = controls.debugOverlay || controls.debugMoodOverlay
+	    const organs = controls.debugOverlay || controls.debugOrganOverlay
+	    pixiStage.setDebugMoodOverlay?.(mood)
+	    pixiStage.setDebugOrganOverlay?.(organs)
+	  }
 	  $: pixiStage.setLightweightVisuals?.(controls.lightweightVisuals)
 	  $: parsedAgentQuery = agentQuery ? Number(agentQuery) : NaN
 	  $: queriedAgent =
@@ -187,6 +192,30 @@ $: {
 	    updateControls({ fatSpeedPenalty: Number((event.currentTarget as HTMLInputElement).value) })
 	  }
 
+	  const handleGaitCadenceScale = (event: Event) => {
+	    updateControls({ gaitCadenceScale: Number((event.currentTarget as HTMLInputElement).value) })
+	  }
+
+	  const handleStanceThreshold = (event: Event) => {
+	    updateControls({ stanceThreshold: Number((event.currentTarget as HTMLInputElement).value) })
+	  }
+
+	  const handleThrustPower = (event: Event) => {
+	    updateControls({ thrustPower: Number((event.currentTarget as HTMLInputElement).value) })
+	  }
+
+	  const handleSlipScale = (event: Event) => {
+	    updateControls({ slipScale: Number((event.currentTarget as HTMLInputElement).value) })
+	  }
+
+	  const handleSenseUpkeepScale = (event: Event) => {
+	    updateControls({ senseUpkeepScale: Number((event.currentTarget as HTMLInputElement).value) })
+	  }
+
+	  const handleMorphologyUpkeepScale = (event: Event) => {
+	    updateControls({ morphologyUpkeepScale: Number((event.currentTarget as HTMLInputElement).value) })
+	  }
+
 	  const resetTuning = () => {
 	    updateControls({
 	      flockingStrength: 1,
@@ -197,6 +226,12 @@ $: {
 	      satiationMultiplier: 1,
 	      massBuildCost: 35,
 	      fatSpeedPenalty: 1,
+	      gaitCadenceScale: 0.95,
+	      stanceThreshold: 0.54,
+	      thrustPower: 1.2,
+	      slipScale: 0.8,
+	      senseUpkeepScale: 1,
+	      morphologyUpkeepScale: 1,
 	    })
 	  }
 
@@ -204,6 +239,18 @@ $: {
     const enabled = (event.currentTarget as HTMLInputElement).checked
     updateControls({ debugOverlay: enabled })
     pixiStage.setDebugOverlay(enabled)
+  }
+
+  const handleDebugMoodToggle = (event: Event) => {
+    const enabled = (event.currentTarget as HTMLInputElement).checked
+    updateControls({ debugMoodOverlay: enabled })
+    pixiStage.setDebugMoodOverlay(enabled)
+  }
+
+  const handleDebugOrgansToggle = (event: Event) => {
+    const enabled = (event.currentTarget as HTMLInputElement).checked
+    updateControls({ debugOrganOverlay: enabled })
+    pixiStage.setDebugOrganOverlay(enabled)
   }
 
   const handleLightweightToggle = (event: Event) => {
@@ -678,9 +725,89 @@ $: {
 	          on:input={handleFatSpeedPenalty}
 	        />
 	      </div>
+	      <div class="control">
+	        <label for="gait-cadence-scale">Gait cadence scale ({controls.gaitCadenceScale.toFixed(2)})</label>
+	        <input
+	          id="gait-cadence-scale"
+	          type="range"
+	          min="0"
+	          max="3"
+	          step="0.05"
+	          value={controls.gaitCadenceScale}
+	          on:input={handleGaitCadenceScale}
+	        />
+	      </div>
+	      <div class="control">
+	        <label for="stance-threshold">Stance threshold ({controls.stanceThreshold.toFixed(2)})</label>
+	        <input
+	          id="stance-threshold"
+	          type="range"
+	          min="0"
+	          max="1"
+	          step="0.01"
+	          value={controls.stanceThreshold}
+	          on:input={handleStanceThreshold}
+	        />
+	      </div>
+	      <div class="control">
+	        <label for="thrust-power">Thrust power ({controls.thrustPower.toFixed(2)})</label>
+	        <input
+	          id="thrust-power"
+	          type="range"
+	          min="0.5"
+	          max="3"
+	          step="0.05"
+	          value={controls.thrustPower}
+	          on:input={handleThrustPower}
+	        />
+	      </div>
+	      <div class="control">
+	        <label for="slip-scale">Slip scale ({controls.slipScale.toFixed(2)})</label>
+	        <input
+	          id="slip-scale"
+	          type="range"
+	          min="0.25"
+	          max="3"
+	          step="0.05"
+	          value={controls.slipScale}
+	          on:input={handleSlipScale}
+	        />
+	      </div>
+	      <div class="control">
+	        <label for="sense-upkeep-scale">Sense upkeep scale ({controls.senseUpkeepScale.toFixed(2)})</label>
+	        <input
+	          id="sense-upkeep-scale"
+	          type="range"
+	          min="0"
+	          max="5"
+	          step="0.05"
+	          value={controls.senseUpkeepScale}
+	          on:input={handleSenseUpkeepScale}
+	        />
+	      </div>
+	      <div class="control">
+	        <label for="morphology-upkeep-scale">Morphology upkeep scale ({controls.morphologyUpkeepScale.toFixed(2)})</label>
+	        <input
+	          id="morphology-upkeep-scale"
+	          type="range"
+	          min="0"
+	          max="5"
+	          step="0.05"
+	          value={controls.morphologyUpkeepScale}
+	          on:input={handleMorphologyUpkeepScale}
+	        />
+	      </div>
       <label class="debug-toggle">
         <input type="checkbox" checked={controls.debugOverlay} on:change={handleDebugOverlayToggle} />
-        Show debug overlay
+        Debug (master)
+      </label>
+      <label class="debug-toggle">
+        <input type="checkbox" checked={controls.debugMoodOverlay} on:change={handleDebugMoodToggle} />
+        Debug mood colors
+      </label>
+      <label class="debug-toggle">
+        <input type="checkbox" checked={controls.debugOrganOverlay} on:change={handleDebugOrgansToggle} />
+        Debug organs & sensing rays
       </label>
       <label class="debug-toggle">
         <input type="checkbox" checked={controls.lightweightVisuals} on:change={handleLightweightToggle} />

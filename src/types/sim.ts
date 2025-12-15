@@ -73,6 +73,16 @@ export interface DNA {
 export type SenseKind = 'eye' | 'ear' | 'nose' | 'touch' | 'taste'
 export type SenseAnchor = 'head' | 'torso' | 'limb' | 'tail'
 
+// Normalized organ placement in body-local space (top-down).
+// - x: forward/backward along heading (forward is +x), typically in [-0.6, 0.6]
+// - y: left/right across the body (left is -y, right is +y), typically in [-0.6, 0.6]
+// - angle: facing direction relative to current heading (0 = forward), in radians
+export interface OrganPlacement {
+  x: number
+  y: number
+  angle: number
+}
+
 export interface ChassisGene {
   length: number
   depth: number
@@ -87,9 +97,17 @@ export interface SenseGene {
   distribution: SenseAnchor
   acuity: number
   energyCost?: number
+  layout?: {
+    placements: OrganPlacement[]
+  }
 }
 
 export type LegPlacement = 'front' | 'mid' | 'rear' | 'mixed'
+
+export interface LegMount {
+  x: number
+  side: -1 | 1
+}
 
 export interface LegGene {
   kind: 'leg'
@@ -97,6 +115,9 @@ export interface LegGene {
   size: number
   placement: LegPlacement
   gaitStyle: number
+  layout?: {
+    mounts: LegMount[]
+  }
 }
 
 export interface WingGene {
@@ -119,8 +140,12 @@ export type AppendageGene =
     }
   | {
       kind: 'tail'
+      count: number
       size: number
       split: number
+      layout?: {
+        mounts: OrganPlacement[]
+      }
     }
   | {
       kind: 'muscle-band'
@@ -221,6 +246,8 @@ export interface AgentState {
   position: Vector2
   velocity: Vector2
   heading: number
+  // Runtime-only locomotion phase (used for leg animation/step timing).
+  gaitPhase?: number
   energy: number
   fatStore: number
   // Age in "simulation years" (used for lifetime leveling).
@@ -342,7 +369,25 @@ export interface ControlState {
   satiationMultiplier: number
   // Energy cost (intake units) per 1.0 body-mass gain when converting surplus into lean mass.
   massBuildCost: number
+  // --- Simulation tuning knobs (runtime) ---
+  // Multiplies leg cadence (higher = faster steps).
+  gaitCadenceScale: number
+  // Stance threshold in [0, 1] for foot planting.
+  stanceThreshold: number
+  // Exponent applied to stance when converting to thrust (higher = peakier thrust, lower = smoother).
+  thrustPower: number
+  // Multiplies allowed lateral slip while feet are planted (lower = less drift).
+  slipScale: number
+  // Multiplies sensing energy upkeep (eyes/ears/noses/etc).
+  senseUpkeepScale: number
+  // Multiplies morphology energy upkeep (legs/tails/fins/wings).
+  morphologyUpkeepScale: number
+  // Legacy "master" debug toggle (enables all debug layers).
   debugOverlay: boolean
+  // Debug: recolor agents by mood/mode.
+  debugMoodOverlay: boolean
+  // Debug: show sensing rays + mount markers.
+  debugOrganOverlay: boolean
   lightweightVisuals: boolean
 }
 
@@ -371,7 +416,15 @@ export const DEFAULT_CONTROLS: ControlState = {
   fatSpeedPenalty: 1,
   satiationMultiplier: 1,
   massBuildCost: 35,
+  gaitCadenceScale: 0.95,
+  stanceThreshold: 0.54,
+  thrustPower: 1.2,
+  slipScale: 0.8,
+  senseUpkeepScale: 1,
+  morphologyUpkeepScale: 1,
   debugOverlay: false,
+  debugMoodOverlay: false,
+  debugOrganOverlay: false,
   lightweightVisuals: false,
 }
 

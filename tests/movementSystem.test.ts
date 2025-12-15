@@ -117,3 +117,61 @@ console.log('movementSystem smoke test passed')
 }
 
 console.log('fat speed penalty sanity test passed')
+
+// Land locomotion requires legs: legCount=0 => no movement.
+{
+  const base = legacyPhpToSnapshot(
+    serialize(
+      {
+        prey1: {
+          type: 'prey',
+          x: 250,
+          y: 250,
+          speed: 60,
+          eyesightfactor: 60,
+          aggression: 20,
+          threshold: 60,
+          max_storage: 200,
+          store_using_threshold: 70,
+        },
+      },
+      'utf-8',
+    ),
+    { ...DEFAULT_WORLD_CONFIG, rngSeed: 456 },
+  )
+
+  const snapshot: SimulationSnapshot = {
+    ...base,
+    agents: base.agents.map((agent) => ({
+      ...agent,
+      energy: 9999,
+      fatStore: 0,
+      heading: 0,
+      velocity: { x: 0, y: 0 },
+      mode: 'patrol',
+      target: null,
+      dna: {
+        ...agent.dna,
+        biome: 'land',
+        bodyPlanVersion: 2,
+        bodyPlan: {
+          ...agent.dna.bodyPlan,
+          limbs: [],
+        },
+      },
+    })),
+  }
+
+  const w = createWorldFromSnapshot(snapshot)
+  lifecycleSystem(w)
+  const before = snapshotWorld(w).agents[0]!
+  for (let i = 0; i < 20; i++) {
+    movementSystem(w, DEFAULT_WORLD_CONFIG.timeStepMs / 1000, 1, 0, 1)
+  }
+  const after = snapshotWorld(w).agents[0]!
+  if (after.position.x !== before.position.x || after.position.y !== before.position.y) {
+    throw new Error(`Expected legless land animal to not move, got dx=${after.position.x - before.position.x} dy=${after.position.y - before.position.y}`)
+  }
+}
+
+console.log('legless land locomotion test passed')

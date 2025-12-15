@@ -1,7 +1,7 @@
 import { AgentMeta, DNA as DNAComp, Energy, ModeState, Position, Reproduction } from '../components'
 import type { SimulationContext } from '../types'
 
-import type { ControlState, DNA } from '@/types/sim'
+import type { ControlState, DNA, OrganPlacement, LegMount } from '@/types/sim'
 import { clamp } from '@/utils/math'
 import {
   markGeneMutation,
@@ -130,6 +130,52 @@ export function reproductionSystem(
 
 const NUMERIC_GENES: GeneKey[] = [...GENE_KEYS]
 
+function rad(deg: number) {
+  return (deg * Math.PI) / 180
+}
+
+function wrapAngle(angle: number) {
+  if (!Number.isFinite(angle)) return 0
+  const tau = Math.PI * 2
+  return ((angle % tau) + tau) % tau
+}
+
+function clampPlacement(p: OrganPlacement): OrganPlacement {
+  return {
+    x: clamp(p.x, -0.65, 0.65),
+    y: clamp(p.y, -0.65, 0.65),
+    angle: wrapAngle(p.angle),
+  }
+}
+
+function mutatePlacement(p: OrganPlacement, rng: () => number, magnitude = 1): OrganPlacement {
+  const angleDelta = (rng() - 0.5) * rad(35) * magnitude
+  const posDelta = (rng() - 0.5) * 0.12 * magnitude
+  return clampPlacement({
+    x: p.x + posDelta,
+    y: p.y + (rng() - 0.5) * 0.12 * magnitude,
+    angle: p.angle + angleDelta,
+  })
+}
+
+function mutateMounts(mounts: LegMount[], rng: () => number, magnitude = 1) {
+  for (let i = 0; i < mounts.length; i++) {
+    const mount = mounts[i]!
+    if (rng() > 0.55) continue
+    const delta = (rng() - 0.5) * 0.18 * magnitude
+    mounts[i] = {
+      x: clamp(mount.x + delta, -0.6, 0.6),
+      side: mount.side,
+    }
+  }
+  if (mounts.length >= 4 && rng() < 0.15) {
+    // Occasional symmetry flip.
+    for (let i = 0; i < mounts.length; i++) {
+      mounts[i] = { ...mounts[i]!, side: (mounts[i]!.side === -1 ? 1 : -1) as -1 | 1 }
+    }
+  }
+}
+
 function crossoverDNA(
   ctx: SimulationContext,
   a: DNA,
@@ -187,9 +233,14 @@ function crossoverDNA(
     sleepEfficiency: 0,
     scavengerAffinity: 0,
     senseUpkeep: 0,
-    bodyPlanVersion: Math.max(a.bodyPlanVersion ?? 0, b.bodyPlanVersion ?? 0, BODY_PLAN_VERSION),
-    bodyPlan: createBaseBodyPlan(a.archetype, a.biome ?? 'land'),
+    bodyPlanVersion: BODY_PLAN_VERSION,
+    bodyPlan: createBaseBodyPlan(a.archetype, 'land'),
   }
+
+  const parentPlanA = a.bodyPlan ?? createBaseBodyPlan(a.archetype, a.biome ?? child.biome)
+  const parentPlanB = b.bodyPlan ?? createBaseBodyPlan(b.archetype, b.biome ?? child.biome)
+  child.bodyPlan = cloneBodyPlan(ctx.rng() < 0.5 ? parentPlanA : parentPlanB)
+  child.bodyPlanVersion = BODY_PLAN_VERSION
 
   let mutationMask = 0
   NUMERIC_GENES.forEach((gene) => {
@@ -229,11 +280,7 @@ function crossoverDNA(
     }
   }
 
-  const parentPlanA = a.bodyPlan ?? createBaseBodyPlan(a.archetype, a.biome ?? child.biome)
-  const parentPlanB = b.bodyPlan ?? createBaseBodyPlan(b.archetype, b.biome ?? child.biome)
-  child.bodyPlan = cloneBodyPlan(ctx.rng() < 0.5 ? parentPlanA : parentPlanB)
-
-  return { dna: child, mutationMask }
+  return { dna: prepareDNA(child), mutationMask }
 }
 
 function extractDNA(ctx: SimulationContext, entity: number): DNA {
@@ -308,25 +355,71 @@ function mutateBodyPlanGenes(dna: DNA, ctx: SimulationContext) {
   const plan = dna.bodyPlan
   if (!plan) return
   const roll = ctx.rng()
-  if (roll < 0.4) {
-    if (!plan.senses.length) {
+
+  // ~30% of the time: mutate organ counts (adds/removes capabilities).
+  if (roll < 0.3) {
+    if (!plan.senses.length || ctx.rng() < 0.25) {
       plan.senses.push({ sense: 'eye', count: 1, distribution: 'head', acuity: 0.5 })
     } else {
-      const sense = plan.senses[Math.floor(ctx.rng() * plan.senses.length)]
-      sense.count = clamp(sense.count + (ctx.rng() < 0.5 ? -1 : 1), 0, 6)
+      const sense = plan.senses[Math.floor(ctx.rng() * plan.senses.length)]!
+      const step = ctx.rng() < 0.65 ? 2 : 1
+      sense.count = clamp(Math.round(sense.count + (ctx.rng() < 0.5 ? -step : step)), 0, 8)
       sense.acuity = clamp(sense.acuity + (ctx.rng() - 0.5) * 0.2, 0.1, 1)
+    }
+    plan.senses = plan.senses.filter((sense) => sense.count > 0)
+    return
+  }
+
+  // ~30%: mutate sense placement (directional organs evolve).
+  if (roll < 0.6 && plan.senses.length) {
+    const sense = plan.senses[Math.floor(ctx.rng() * plan.senses.length)]!
+    if (!sense.layout) sense.layout = { placements: [] }
+    const desired = Math.max(0, Math.floor(sense.count))
+    while (sense.layout.placements.length < desired) {
+      sense.layout.placements.push({ x: 0.35, y: 0, angle: 0 })
+    }
+    sense.layout.placements = sense.layout.placements.slice(0, desired).map((p) => clampPlacement(p))
+    if (sense.layout.placements.length) {
+      const idx = Math.floor(ctx.rng() * sense.layout.placements.length)
+      sense.layout.placements[idx] = mutatePlacement(sense.layout.placements[idx]!, ctx.rng, 1)
     }
     return
   }
 
   if (dna.biome === 'land' && featureFlags.landBodyPlan) {
-    let leg = plan.limbs.find((limb) => limb.kind === 'leg')
-    if (!leg) {
-      plan.limbs.push({ kind: 'leg', count: 2, size: 0.6, placement: 'mid', gaitStyle: 0.5 })
+    // On land, alternate between legs and tails, including mount evolution.
+    const mutateTail = ctx.rng() < 0.4
+    if (mutateTail) {
+      const tail = plan.appendages.find((appendage) => appendage.kind === 'tail')
+      if (!tail) {
+        plan.appendages.push({ kind: 'tail', count: 1, size: 0.55, split: 0 })
+      } else if (tail.kind === 'tail') {
+        const step = ctx.rng() < 0.65 ? 1 : 0
+        tail.count = clamp(Math.round(tail.count + (ctx.rng() < 0.5 ? -step : step)), 0, 3)
+        tail.size = clamp(tail.size + (ctx.rng() - 0.5) * 0.2, 0.1, 1.2)
+        tail.split = clamp(tail.split + (ctx.rng() - 0.5) * 0.15, 0, 1)
+        if (tail.layout?.mounts?.length) {
+          const idx = Math.floor(ctx.rng() * tail.layout.mounts.length)
+          tail.layout.mounts[idx] = mutatePlacement(tail.layout.mounts[idx]!, ctx.rng, 1)
+        }
+      }
+      plan.appendages = plan.appendages.filter((appendage) =>
+        appendage.kind === 'tail' ? appendage.count > 0 : true,
+      )
     } else {
-      leg.count = clamp(leg.count + (ctx.rng() < 0.5 ? -1 : 1), 2, 6)
-      leg.size = clamp(leg.size + (ctx.rng() - 0.5) * 0.2, 0.2, 1)
-      leg.gaitStyle = clamp(leg.gaitStyle + (ctx.rng() - 0.5) * 0.3, 0.1, 1)
+      let leg = plan.limbs.find((limb) => limb.kind === 'leg')
+      if (!leg) {
+        plan.limbs.push({ kind: 'leg', count: 2, size: 0.6, placement: 'mid', gaitStyle: 0.5 })
+      } else if (leg.kind === 'leg') {
+        const step = ctx.rng() < 0.65 ? 2 : 1
+        leg.count = clamp(Math.round(leg.count + (ctx.rng() < 0.5 ? -step : step)), 0, 10)
+        leg.size = clamp(leg.size + (ctx.rng() - 0.5) * 0.2, 0.2, 1)
+        leg.gaitStyle = clamp(leg.gaitStyle + (ctx.rng() - 0.5) * 0.3, 0.1, 1)
+        if (leg.layout?.mounts?.length) {
+          mutateMounts(leg.layout.mounts, ctx.rng, 1)
+        }
+      }
+      plan.limbs = plan.limbs.filter((limb) => limb.kind !== 'leg' || limb.count > 0)
     }
     return
   }
@@ -389,4 +482,8 @@ function genomeSimilarity(a: DNA, b: DNA): number {
   })
   if (count === 0) return 0
   return total / count
+}
+
+export const __test__ = {
+  mutateBodyPlanGenes,
 }

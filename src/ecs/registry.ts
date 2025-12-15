@@ -10,6 +10,7 @@ import {
   Manure,
   DNA,
   Energy,
+  AngularVelocity,
   GenomeFlags,
   Heading,
   Intent,
@@ -22,6 +23,7 @@ import {
   Reproduction,
   Velocity,
   ArchetypeCode,
+  LocomotionState,
 } from './components'
 import { decodeMoodKind, decodeMoodTier, encodeMoodKind, encodeMoodTier } from './mood/moodCatalog'
 
@@ -36,6 +38,7 @@ export interface EntityRegistry {
 export const COMPONENTS = {
   Position,
   Velocity,
+  AngularVelocity,
   Heading,
   AgentMeta,
   Body,
@@ -48,6 +51,7 @@ export const COMPONENTS = {
   Intent,
   Perception,
   Reproduction,
+  LocomotionState,
   PlantStats,
   Obstacle,
   Corpse,
@@ -65,6 +69,7 @@ export function spawnAgentEntity(registry: EntityRegistry, state: AgentState): n
   const entity = addEntity(registry.world)
   addComponent(registry.world, Position, entity)
   addComponent(registry.world, Velocity, entity)
+  addComponent(registry.world, AngularVelocity, entity)
   addComponent(registry.world, Heading, entity)
   addComponent(registry.world, AgentMeta, entity)
   addComponent(registry.world, Body, entity)
@@ -77,6 +82,7 @@ export function spawnAgentEntity(registry: EntityRegistry, state: AgentState): n
   addComponent(registry.world, Intent, entity)
   addComponent(registry.world, Perception, entity)
   addComponent(registry.world, Reproduction, entity)
+  addComponent(registry.world, LocomotionState, entity)
 
   hydrateAgentEntity(entity, state)
   return entity
@@ -87,6 +93,7 @@ export function hydrateAgentEntity(entity: number, state: AgentState) {
   Position.y[entity] = state.position.y
   Velocity.x[entity] = state.velocity.x
   Velocity.y[entity] = state.velocity.y
+  AngularVelocity.omega[entity] = 0
   Heading.angle[entity] = state.heading
   Heading.turnRate[entity] = 0
   AgentMeta.id[entity] = state.id
@@ -143,6 +150,12 @@ export function hydrateAgentEntity(entity: number, state: AgentState) {
   Reproduction.libidoThreshold[entity] = state.dna.libidoThreshold ?? 0.6
   Reproduction.mateId[entity] = 0
   GenomeFlags.mutationMask[entity] = state.mutationMask ?? 0
+
+  // Deterministic gait seeding (avoid Math.random for sim determinism).
+  LocomotionState.gaitPhase[entity] =
+    typeof state.gaitPhase === 'number' && Number.isFinite(state.gaitPhase)
+      ? state.gaitPhase
+      : ((state.id * 9973) % 6283) / 1000
 }
 
 export function serializeAgentEntity(entity: number, ageYears = 0, genomeOverride?: DNAState): AgentState {
@@ -167,6 +180,7 @@ export function serializeAgentEntity(entity: number, ageYears = 0, genomeOverrid
       y: Velocity.y[entity],
     },
     heading: Heading.angle[entity],
+    gaitPhase: LocomotionState.gaitPhase[entity] ?? 0,
     energy: Energy.value[entity],
     fatStore: Energy.fatStore[entity],
     age: ageYears,

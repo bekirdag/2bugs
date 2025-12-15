@@ -11,18 +11,17 @@ import {
   Position,
   ArchetypeCode,
   Reproduction,
+  Obstacle,
 } from '../components'
 import { applyBehaviourIntent } from '../mood/behaviorEngine'
 import { resolveMood, type MoodMachineInput } from '../mood/moodMachine'
 import { decodeMoodKind, encodeMoodKind, encodeMoodTier } from '../mood/moodCatalog'
 import type { SimulationContext } from '../types'
-import type { ControlState, TargetRef } from '@/types/sim'
+import type { ControlState, TargetRef, DNA as GenomeDNA } from '@/types/sim'
 import { clamp, distanceSquared } from '@/utils/math'
 
-function computeVisionFovRadians(archetype: string, awarenessGene: number) {
-  // Animals tend to have a limited forward field-of-view; prey generally have wider peripheral vision.
-  const base = archetype === 'hunter' ? (220 * Math.PI) / 180 : (260 * Math.PI) / 180
-  return clamp(base * (0.75 + clamp(awarenessGene, 0, 1) * 0.5), Math.PI * 0.6, Math.PI * 2)
+function rad(deg: number) {
+  return (deg * Math.PI) / 180
 }
 
 function detectionChance(
@@ -45,15 +44,294 @@ function detectionChance(
   const dirX = dx * inv
   const dirY = dy * inv
   const dot = dirX * headingCos + dirY * headingSin
-  const denom = cosHalfFov + 1
-  const peripheral = denom <= 0.0001 ? 0 : clamp((dot + 1) / denom, 0, 1) * 0.25
-  const fovFactor = dot >= cosHalfFov ? 1 : peripheral
+  // Strict directional vision: if the target is outside the eye's FOV, it is not seen at all.
+  const fovFactor = dot >= cosHalfFov ? 1 : 0
 
   const distFactor = clamp(1 - dist / Math.max(maxDist, 1), 0, 1)
   const awarenessFactor = clamp(0.65 + awarenessGene * 0.7, 0.4, 1.35)
   const camoFactor = clamp(1 - clamp(targetCamo, 0, 1) * 0.6, 0.2, 1)
 
   return clamp((0.1 + distFactor * 0.9) * fovFactor * awarenessFactor * camoFactor, 0, 1)
+}
+
+type SenseProfile = {
+  visualRange: number
+  senseRange: number
+  hearingRange: number
+  smellRange: number
+  // Eye direction vectors in world space (already includes current heading).
+  eyeDirs: { cos: number; sin: number }[]
+  cosHalfEyeFov: number
+  earDirs: { cos: number; sin: number }[]
+  cosHalfEarFov: number
+  earSideHints: number[]
+  noseDirs: { cos: number; sin: number }[]
+  cosHalfNoseFov: number
+  noseForwardBias: number
+  headingCos: number
+  headingSin: number
+  hasAnySense: boolean
+}
+
+function buildSenseProfile(
+  genome: GenomeDNA | undefined,
+  archetype: string,
+  awarenessGene: number,
+  heading: number,
+  visualGeneRange: number,
+): SenseProfile {
+  const plan = genome?.bodyPlan
+  const senses = plan?.senses ?? []
+  let eyeCount = 0
+  let earCount = 0
+  let noseCount = 0
+  let touchCount = 0
+  let earAcuitySum = 0
+  let noseAcuitySum = 0
+
+  const eyeAngles: number[] = []
+  const earAngles: number[] = []
+  const earSideHints: number[] = []
+  const noseAngles: number[] = []
+  const noseX: number[] = []
+  senses.forEach((sense) => {
+    if (sense.count <= 0) return
+    if (sense.sense === 'eye') {
+      eyeCount += sense.count
+      const placements = sense.layout?.placements ?? []
+      for (let i = 0; i < Math.min(placements.length, sense.count); i++) {
+        const angle = placements[i]?.angle
+        if (typeof angle === 'number' && Number.isFinite(angle)) {
+          eyeAngles.push(angle)
+        }
+      }
+      // If a gene predates layouts, approximate a forward-facing default.
+      while (eyeAngles.length < eyeCount) {
+        eyeAngles.push(0)
+      }
+    } else if (sense.sense === 'ear') {
+      earCount += sense.count
+      earAcuitySum += sense.acuity * sense.count
+      const placements = sense.layout?.placements ?? []
+      for (let i = 0; i < Math.min(placements.length, sense.count); i++) {
+        const angle = placements[i]?.angle
+        const y = placements[i]?.y
+        if (typeof angle === 'number' && Number.isFinite(angle)) {
+          earAngles.push(angle)
+        }
+        if (typeof y === 'number' && Number.isFinite(y)) {
+          earSideHints.push(y === 0 ? 0 : y < 0 ? -1 : 1)
+        }
+      }
+      while (earAngles.length < earCount) {
+        // Default to lateral "coverage" if missing.
+        earAngles.push(earAngles.length % 2 === 0 ? -Math.PI / 2 : Math.PI / 2)
+        earSideHints.push(earSideHints.length % 2 === 0 ? -1 : 1)
+      }
+    } else if (sense.sense === 'nose') {
+      noseCount += sense.count
+      noseAcuitySum += sense.acuity * sense.count
+      const placements = sense.layout?.placements ?? []
+      for (let i = 0; i < Math.min(placements.length, sense.count); i++) {
+        const angle = placements[i]?.angle
+        const x = placements[i]?.x
+        if (typeof angle === 'number' && Number.isFinite(angle)) {
+          noseAngles.push(angle)
+        }
+        if (typeof x === 'number' && Number.isFinite(x)) {
+          noseX.push(x)
+        }
+      }
+      while (noseAngles.length < noseCount) {
+        noseAngles.push(0)
+        noseX.push(0.45)
+      }
+    } else if (sense.sense === 'touch') {
+      touchCount += sense.count
+    }
+  })
+
+  const hasAnySense = eyeCount + earCount + noseCount + touchCount > 0
+
+  const visualRange = eyeCount > 0 ? visualGeneRange : 0
+
+  const avgEarAcuity = earCount > 0 ? earAcuitySum / earCount : 0.5
+  const avgNoseAcuity = noseCount > 0 ? noseAcuitySum / noseCount : 0.5
+  const awarenessFactor = 0.85 + clamp(awarenessGene, 0, 1) * 0.3
+  const hearingRange =
+    earCount <= 0 ? 0 : clamp((70 + earCount * 45 * (0.65 + avgEarAcuity * 0.7)) * awarenessFactor, 24, 360)
+  const smellRange =
+    noseCount <= 0 ? 0 : clamp((60 + noseCount * 50 * (0.65 + avgNoseAcuity * 0.7)) * awarenessFactor, 24, 420)
+
+  const perEyeFov = archetype === 'hunter' ? rad(110) : rad(140)
+  const eyeFov = clamp(perEyeFov * (0.8 + clamp(awarenessGene, 0, 1) * 0.5), rad(55), rad(175))
+  const cosHalfEyeFov = Math.cos(eyeFov / 2)
+  const eyeDirs =
+    eyeCount <= 0
+      ? []
+      : eyeAngles.map((angle) => {
+          const a = heading + angle
+          return { cos: Math.cos(a), sin: Math.sin(a) }
+        })
+
+  const earFovBase = archetype === 'hunter' ? rad(260) : rad(300)
+  const earFov = clamp(earFovBase * (0.85 + clamp(awarenessGene, 0, 1) * 0.35), rad(170), rad(330))
+  const cosHalfEarFov = Math.cos(earFov / 2)
+  const earDirs =
+    earCount <= 0
+      ? []
+      : earAngles.map((angle) => {
+          const a = heading + angle
+          return { cos: Math.cos(a), sin: Math.sin(a) }
+        })
+
+  const noseFovBase = archetype === 'hunter' ? rad(220) : rad(240)
+  const noseFov = clamp(noseFovBase * (0.85 + clamp(awarenessGene, 0, 1) * 0.25), rad(140), rad(300))
+  const cosHalfNoseFov = Math.cos(noseFov / 2)
+  const noseDirs =
+    noseCount <= 0
+      ? []
+      : noseAngles.map((angle) => {
+          const a = heading + angle
+          return { cos: Math.cos(a), sin: Math.sin(a) }
+        })
+
+  const noseForwardBias =
+    noseX.length > 0 ? clamp(noseX.reduce((sum, v) => sum + v, 0) / noseX.length, -0.65, 0.65) : 0
+  const headingCos = Math.cos(heading)
+  const headingSin = Math.sin(heading)
+
+  const senseRange = Math.max(visualRange, hearingRange, smellRange, touchCount > 0 ? 26 : 0)
+
+  return {
+    visualRange,
+    senseRange,
+    hearingRange,
+    smellRange,
+    eyeDirs,
+    cosHalfEyeFov,
+    earDirs,
+    cosHalfEarFov,
+    earSideHints,
+    noseDirs,
+    cosHalfNoseFov,
+    noseForwardBias,
+    headingCos,
+    headingSin,
+    hasAnySense,
+  }
+}
+
+function combinedDetectionChance(
+  senses: SenseProfile,
+  dx: number,
+  dy: number,
+  dist: number,
+  awarenessGene: number,
+  targetCamo: number,
+  rng: () => number,
+  occlusion?: { vision?: number; hearing?: number; smell?: number },
+) {
+  if (!senses.hasAnySense) return 0
+  if (dist <= 12) return 1
+
+  const inv = 1 / Math.max(dist, 0.001)
+  const dirX = dx * inv
+  const dirY = dy * inv
+
+  let visual = 0
+  if (senses.visualRange > 0 && dist <= senses.visualRange && senses.eyeDirs.length) {
+    let best = senses.eyeDirs[0]
+    let bestDot = -Infinity
+    for (const eye of senses.eyeDirs) {
+      const dot = dirX * eye.cos + dirY * eye.sin
+      if (dot > bestDot) {
+        bestDot = dot
+        best = eye
+      }
+    }
+    visual =
+      detectionChance(best.cos, best.sin, dx, dy, dist, senses.visualRange, awarenessGene, targetCamo, senses.cosHalfEyeFov) *
+      (occlusion?.vision ?? 1)
+  }
+
+  let hearing = 0
+  if (senses.hearingRange > 0 && dist <= senses.hearingRange && senses.earDirs.length) {
+    let bestDot = -Infinity
+    for (const ear of senses.earDirs) {
+      bestDot = Math.max(bestDot, dirX * ear.cos + dirY * ear.sin)
+    }
+    if (bestDot >= senses.cosHalfEarFov) {
+      const side = dirX * -senses.headingSin + dirY * senses.headingCos
+      const sideSign = side === 0 ? 0 : side < 0 ? -1 : 1
+      const hasMatchingEar =
+        sideSign === 0 ? true : senses.earSideHints.some((hint) => hint === 0 || hint === sideSign)
+      const stereoBias = hasMatchingEar ? 1.12 : 0.92
+      hearing = clamp(
+        (1 - dist / senses.hearingRange) *
+          (0.18 + clamp(awarenessGene, 0, 1) * 0.35) *
+          (1 - targetCamo * 0.15) *
+          stereoBias *
+          (occlusion?.hearing ?? 1),
+        0,
+        1,
+      )
+    }
+  }
+
+  let smell = 0
+  if (senses.smellRange > 0 && dist <= senses.smellRange && senses.noseDirs.length) {
+    let bestDot = -Infinity
+    for (const nose of senses.noseDirs) {
+      bestDot = Math.max(bestDot, dirX * nose.cos + dirY * nose.sin)
+    }
+    if (bestDot >= senses.cosHalfNoseFov) {
+      const forward = dirX * senses.headingCos + dirY * senses.headingSin
+      const forwardBias = forward > 0 ? 1 + clamp(senses.noseForwardBias, 0, 0.65) * 0.25 : 1
+      smell = clamp(
+        (1 - dist / senses.smellRange) *
+          (0.12 + clamp(awarenessGene, 0, 1) * 0.25) *
+          forwardBias *
+          (occlusion?.smell ?? 1),
+        0,
+        1,
+      )
+    }
+  }
+
+  const combined = 1 - (1 - visual) * (1 - hearing) * (1 - smell)
+  // Add a tiny bit of noise so identical candidates don't lockstep forever.
+  const jitter = (rng() - 0.5) * 0.03
+  return clamp(combined + jitter, 0, 1)
+}
+
+function occlusionFactors(ctx: SimulationContext, from: { x: number; y: number }, to: { x: number; y: number }) {
+  if (!ctx.rocks || ctx.rocks.size === 0) return { vision: 1, hearing: 1, smell: 1 }
+  const ax = from.x
+  const ay = from.y
+  const bx = to.x
+  const by = to.y
+  const abx = bx - ax
+  const aby = by - ay
+  const abLen2 = abx * abx + aby * aby
+  if (abLen2 < 1e-6) return { vision: 1, hearing: 1, smell: 1 }
+
+  for (const rockEntity of ctx.rocks.values()) {
+    const r = (Obstacle.radius[rockEntity] || 0) + 6
+    if (r <= 1) continue
+    const cx = Position.x[rockEntity]
+    const cy = Position.y[rockEntity]
+    const t = clamp(((cx - ax) * abx + (cy - ay) * aby) / abLen2, 0, 1)
+    const px = ax + abx * t
+    const py = ay + aby * t
+    const dx = cx - px
+    const dy = cy - py
+    if (dx * dx + dy * dy <= r * r) {
+      // Hardest on vision; partially attenuates hearing/smell.
+      return { vision: 0.12, hearing: 0.7, smell: 0.55 }
+    }
+  }
+  return { vision: 1, hearing: 1, smell: 1 }
 }
 
 function approximateBodyMass(ctx: SimulationContext, id: number, entity: number) {
@@ -111,8 +389,11 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
     const sizeFear = clamp(DNA.sizeFear[entity] ?? 0.5, 0, 1)
 
     const mePos = { x: Position.x[entity], y: Position.y[entity] }
-    const vision = DNA.visionRange[entity] * (1 + (awareness - 0.5) * 0.6)
-    const neighbors = ctx.agentIndex.query(mePos, vision)
+    const visualGeneRange = DNA.visionRange[entity] * (1 + (awareness - 0.5) * 0.6)
+    const heading = Heading.angle[entity]
+    const awarenessGene = genome?.awareness ?? DNA.awareness[entity] ?? 0.5
+    const senses = buildSenseProfile(genome, archetype, awarenessGene, heading, visualGeneRange)
+    const neighbors = ctx.agentIndex.query(mePos, senses.senseRange)
 
     const myBodyMass = approximateBodyMass(ctx, id, entity)
     const preySizeTargetRatio =
@@ -128,19 +409,13 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
     let allyCount = 0
     let allyProximity = 0
 
-    const dangerRadius = genome?.dangerRadius ?? vision
+    const dangerRadius = genome?.dangerRadius ?? senses.senseRange
     const escapeTendency = clamp(
       genome?.escapeTendency ?? DNA.cowardice[entity] ?? DNA.fear[entity] ?? 0.3,
       0.01,
       2,
     )
-    const awarenessGene = genome?.awareness ?? DNA.awareness[entity] ?? 0.5
     const courageGene = genome?.bravery ?? 0.5
-    const fovRadians = computeVisionFovRadians(archetype, awarenessGene)
-    const cosHalfFov = Math.cos(fovRadians / 2)
-    const heading = Heading.angle[entity]
-    const headingCos = Math.cos(heading)
-    const headingSin = Math.sin(heading)
     let forcedFlee = false
     neighbors.forEach((bucket) => {
       if (bucket.id === id) return
@@ -151,17 +426,17 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
       const dx = otherPos.x - mePos.x
       const dy = otherPos.y - mePos.y
       const dist = Math.sqrt(dx * dx + dy * dy)
-      if (dist > vision) return
-      const seenChance = detectionChance(
-        headingCos,
-        headingSin,
+      if (dist > senses.senseRange) return
+      const occ = occlusionFactors(ctx, mePos, otherPos)
+      const seenChance = combinedDetectionChance(
+        senses,
         dx,
         dy,
         dist,
-        vision,
         awarenessGene,
         DNA.camo[otherEntity] ?? 0,
-        cosHalfFov,
+        ctx.rng,
+        occ,
       )
       if (ctx.rng() > seenChance) return
 
@@ -169,7 +444,7 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
       const sameFamily = AgentMeta.familyColor[otherEntity] === AgentMeta.familyColor[entity]
       if (sameSpecies) {
         allyCount += 1
-        allyProximity += clamp(1 - dist / vision, 0, 1)
+        allyProximity += clamp(1 - dist / Math.max(senses.senseRange, 1), 0, 1)
       }
       // Do not treat same-family conspecifics as threats; they are baseline allies.
       if (sameSpecies && sameFamily) {
@@ -198,7 +473,7 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
       }
 
       const cowardice = clamp(DNA.cowardice[entity] ?? DNA.fear[entity] ?? 0.3, 0, 2)
-      const proximity = clamp(1 - dist / vision, 0, 1)
+      const proximity = clamp(1 - dist / Math.max(senses.senseRange, 1), 0, 1)
       const threatScore = clamp(
         (threatBase + cowardice) * (proximity + awarenessGene) * sizeMultiplier,
         0,
@@ -256,7 +531,7 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
         if (dietAgents.includes(currentType)) {
           const currentPos = { x: Position.x[currentTargetEntity], y: Position.y[currentTargetEntity] }
           const dist = Math.sqrt(distanceSquared(mePos, currentPos))
-          if (dist <= vision) {
+          if (dist <= senses.senseRange) {
             const currentWeight =
               (1 / Math.max(dist, 1)) * (0.6 + focus * 0.4) * (1 + aggression * 0.4) * awareness
             let sizeBias = 1
@@ -279,7 +554,7 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
     const isScavenger = archetype === 'scavenger'
     const scavengerAffinity = clamp(isScavenger ? 1 : (genome?.scavengerAffinity ?? 0), 0, 1)
     if ((dietAgents.length || isScavenger) && (hungerRatio < 0.85 || bestPreyTarget === null)) {
-      const corpseCandidates = ctx.corpseIndex.query(mePos, vision)
+      const corpseCandidates = ctx.corpseIndex.query(mePos, senses.senseRange)
       corpseCandidates.forEach((bucket) => {
         const corpseEntity = ctx.corpses.get(bucket.id)
         if (corpseEntity === undefined) return
@@ -289,8 +564,9 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
         const dx = corpsePos.x - mePos.x
         const dy = corpsePos.y - mePos.y
         const dist = Math.sqrt(dx * dx + dy * dy)
-        if (dist > vision) return
-        const seenChance = detectionChance(headingCos, headingSin, dx, dy, dist, vision, awarenessGene, 0, cosHalfFov)
+        if (dist > senses.senseRange) return
+        const occ = occlusionFactors(ctx, mePos, corpsePos)
+        const seenChance = combinedDetectionChance(senses, dx, dy, dist, awarenessGene, 0, ctx.rng, occ)
         if (ctx.rng() > seenChance) return
         const hungerNeed = clamp(1 - hungerRatio, 0, 1)
         const weight =
@@ -314,7 +590,7 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
         const dx = corpsePos.x - mePos.x
         const dy = corpsePos.y - mePos.y
         const dist = Math.sqrt(dx * dx + dy * dy)
-        if (dist <= vision) {
+        if (dist <= senses.senseRange) {
           const currentWeight =
             (1 / Math.max(dist, 1)) *
             (0.65 + focus * 0.35) *
@@ -343,7 +619,7 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
     let bestPlantTarget: TargetRef | null = null
     let bestPlantWeight = -Infinity
     if (eatsPlants && (hungerRatio < 0.9 || hungerRatio < 1 && bestPreyTarget === null)) {
-      const plantCandidates = ctx.plantIndex.query(mePos, vision)
+      const plantCandidates = ctx.plantIndex.query(mePos, senses.senseRange)
       plantCandidates.forEach((bucket) => {
         const plantEntity = ctx.plants.get(bucket.id)
         if (plantEntity === undefined) return
@@ -351,7 +627,8 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
         const dx = plantPos.x - mePos.x
         const dy = plantPos.y - mePos.y
         const dist = Math.sqrt(dx * dx + dy * dy)
-        const seenChance = detectionChance(headingCos, headingSin, dx, dy, dist, vision, awarenessGene, 0, cosHalfFov)
+        const occ = occlusionFactors(ctx, mePos, plantPos)
+        const seenChance = combinedDetectionChance(senses, dx, dy, dist, awarenessGene, 0, ctx.rng, occ)
         if (ctx.rng() > seenChance) return
         const weight =
           (Energy.fatCapacity[entity] * 0.2 + 1) * (1 / Math.max(dist, 1)) * (hungerRatio < 0.55 ? 1.2 : 1)
@@ -369,7 +646,7 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
         const dist = Math.sqrt(
           distanceSquared(mePos, { x: Position.x[currentPlantEntity], y: Position.y[currentPlantEntity] }),
         )
-        if (dist <= vision) {
+        if (dist <= senses.senseRange) {
           const currentWeight =
             (Energy.fatCapacity[entity] * 0.2 + 1) * (1 / Math.max(dist, 1)) * (hungerRatio < 0.55 ? 1.2 : 1)
           if (currentWeight * stickiness >= bestPlantWeight) {
@@ -488,12 +765,11 @@ function findMateTarget(
   const libidoThreshold = Reproduction.libidoThreshold[entity] || 0.6
   if (libido < libidoThreshold) return null
   const awarenessGene = selfGenome?.awareness ?? DNA.awareness[entity] ?? 0.5
-  const vision = DNA.visionRange[entity] * (1 + (clamp(DNA.awareness[entity] ?? 0.5, 0, 1) - 0.5) * 0.6)
-  const fovRadians = computeVisionFovRadians(decodeArchetype(AgentMeta.archetype[entity]), awarenessGene)
-  const cosHalfFov = Math.cos(fovRadians / 2)
   const heading = Heading.angle[entity]
-  const headingCos = Math.cos(heading)
-  const headingSin = Math.sin(heading)
+  const archetype = decodeArchetype(AgentMeta.archetype[entity])
+  const visualGeneRange =
+    DNA.visionRange[entity] * (1 + (clamp(DNA.awareness[entity] ?? 0.5, 0, 1) - 0.5) * 0.6)
+  const senses = buildSenseProfile(selfGenome, archetype, awarenessGene, heading, visualGeneRange)
   let bestId: number | null = null
   let bestDist = Infinity
   neighbors.forEach((bucket) => {
@@ -511,16 +787,16 @@ function findMateTarget(
     const dx = Position.x[mateEntity] - Position.x[entity]
     const dy = Position.y[mateEntity] - Position.y[entity]
     const dist = Math.sqrt(dx * dx + dy * dy)
-    const seenChance = detectionChance(
-      headingCos,
-      headingSin,
+    const occ = occlusionFactors(ctx, { x: Position.x[entity], y: Position.y[entity] }, { x: Position.x[mateEntity], y: Position.y[mateEntity] })
+    const seenChance = combinedDetectionChance(
+      senses,
       dx,
       dy,
       dist,
-      vision,
       awarenessGene,
       DNA.camo[mateEntity] ?? 0,
-      cosHalfFov,
+      ctx.rng,
+      occ,
     )
     if (ctx.rng() > seenChance) return
     if (dist < bestDist) {
@@ -552,4 +828,9 @@ function archetypeDiet(archetype: string) {
   if (archetype === 'hunter') return ['prey']
   if (archetype === 'scavenger') return []
   return ['plant']
+}
+
+export const __test__ = {
+  buildSenseProfile,
+  combinedDetectionChance,
 }
