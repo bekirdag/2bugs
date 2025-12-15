@@ -116,6 +116,22 @@ export const PlantStats = defineComponent({
   seasonPhase: Types.f32,
 })
 
+export const Obstacle = defineComponent({
+  radius: Types.f32,
+})
+
+export const Corpse = defineComponent({
+  nutrients: Types.f32,
+  decay: Types.f32,
+  maxDecay: Types.f32,
+  radius: Types.f32,
+})
+
+// Phenotype state (not inherited directly): animals can grow their current mass toward genetic `dna.bodyMass`.
+export const Body = defineComponent({
+  mass: Types.f32,
+})
+
 export const AgentRef = defineComponent({
   id: Types.ui32,
 })

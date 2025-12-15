@@ -41,6 +41,10 @@ export const GENE_KEYS = [
   'circadianBias',
   'sleepEfficiency',
   'scavengerAffinity',
+  // NOTE: appended to preserve mutation-mask indices for existing genes.
+  'preySizeTargetRatio',
+  // NOTE: appended to preserve mutation-mask indices for existing genes.
+  'forageStartRatio',
 ] as const
 
 export type GeneKey = typeof GENE_KEYS[number]
@@ -90,6 +94,8 @@ export function randomGeneValue(gene: GeneKey, rng: () => number): number {
       return 180 + rng() * 180 // 180..360 typical
     case 'hungerThreshold':
       return 40 + rng() * 50 // 40..90
+    case 'forageStartRatio':
+      return 0.45 + rng() * 0.45 // 0.45..0.9
     case 'fatCapacity':
       return 120 + rng() * 1880 // 120..2000
     case 'fatBurnThreshold':
@@ -142,6 +148,8 @@ export function randomGeneValue(gene: GeneKey, rng: () => number): number {
       return 0.05 + rng() * 0.5 // 0.05..0.55
     case 'sizeFear':
       return 0.2 + rng() * 0.7 // 0.2..0.9
+    case 'preySizeTargetRatio':
+      return 0.1 + rng() * 0.9 // 0.1..1 (preyMass / hunterMass)
     case 'dependency':
       return 0.1 + rng() * 0.8 // 0.1..0.9
     case 'independenceAge':

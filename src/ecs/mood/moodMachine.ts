@@ -3,6 +3,7 @@ import { clamp } from '@/utils/math'
 
 export interface MoodMachineInput {
   hungerRatio: number
+  forageStartRatio?: number
   fatigue: number
   sleepPressure: number
   libido: number
@@ -72,6 +73,8 @@ export function resolveMood(input: MoodMachineInput): MoodDecision {
   }
 
   const hungerPressure = clamp(1 - input.hungerRatio, 0, 1)
+  const forageStartRatio = clamp(input.forageStartRatio ?? 0.65, 0.25, 0.95)
+  const forageStartPressure = clamp(1 - forageStartRatio, 0.05, 0.9)
   const exhaustionPressure = clamp(
     Math.max(input.fatigue, input.sleepPressure * 0.8) * (1.05 + (1 - stability) * 0.05),
     0,
@@ -79,7 +82,10 @@ export function resolveMood(input: MoodMachineInput): MoodDecision {
   )
   const foragePressure = hungerPressure * (0.8 + (1 - stability) * 0.4)
 
-  if (foragePressure > 0.6 || (foragePressure > 0.35 && foragePressure > exhaustionPressure + 0.1)) {
+  if (
+    foragePressure > forageStartPressure ||
+    (foragePressure > forageStartPressure * 0.6 && foragePressure > exhaustionPressure + 0.1)
+  ) {
     const target = preferForageTarget(input.preyTarget, input.plantTarget)
     const mode: AgentMode = target?.kind === 'plant' ? 'graze' : 'hunt'
     const intense = foragePressure > 0.8
@@ -101,6 +107,11 @@ export function resolveMood(input: MoodMachineInput): MoodDecision {
     }
   }
 
+  // Mating should not “steal” behaviour when the animal is already below its personal
+  // food-search threshold (Maslow: physiology before reproduction).
+  if (input.hungerRatio < forageStartRatio) {
+    // Fall through to social/exploration (patrol) rather than mate.
+  } else {
   const libidoPressure = clamp(input.libido * (0.8 + (1 - stability) * 0.25), 0, 1)
   const libidoThreshold = 0.62 - (1 - stability) * 0.12
   if (libidoPressure > libidoThreshold) {
@@ -110,6 +121,7 @@ export function resolveMood(input: MoodMachineInput): MoodDecision {
       intensity: libidoPressure,
       behaviour: { mode: 'mate' },
     }
+  }
   }
 
   const herdDesire = clamp((input.cohesion ?? 0.2) * 0.6 + (input.dependency ?? 0.2) * 0.4, 0, 1)

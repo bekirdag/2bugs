@@ -4,6 +4,7 @@ import { createWorldFromSnapshot, initWorld, snapshotWorld, stepWorld } from '@/
 import type { MainToWorkerMessage, WorkerToMainMessage } from '@/types/messages'
 import { DEFAULT_CONTROLS, DEFAULT_WORLD_CONFIG } from '@/types/sim'
 import type { SimulationSnapshot } from '@/types/sim'
+import { effectiveFatCapacity } from '@/ecs/lifecycle'
 
 const ctx: DedicatedWorkerGlobalScope = self as DedicatedWorkerGlobalScope
 
@@ -213,8 +214,10 @@ function summarizeGenesFromContext(ctxWorld: typeof world): Record<string, numbe
 function logAgentSizes(snapshot: SimulationSnapshot) {
   if (!snapshot.agents.length) return
   const sizes = snapshot.agents.map((agent) => {
-    const weightScale = 1 + (agent.fatStore / Math.max(agent.dna.fatCapacity, 1)) * 0.7
-    const size = (6 + agent.dna.bodyMass * 3) * weightScale * 2
+    const mass = agent.mass ?? agent.dna.bodyMass
+    const fatCapacity = effectiveFatCapacity(agent.dna, mass)
+    const weightScale = 1 + (agent.fatStore / Math.max(fatCapacity, 1)) * 0.7
+    const size = (6 + mass * 3) * weightScale * 2
     return size
   })
   const minSize = Math.min(...sizes)

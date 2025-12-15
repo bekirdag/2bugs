@@ -53,7 +53,8 @@ body {
   position: absolute;
   top: 16px;
   left: 16px;
-  display: flex;
+  display: grid;
+  grid-auto-flow: column;
   gap: 12px;
   padding: 8px 16px;
   border-radius: 999px;
@@ -65,9 +66,21 @@ body {
   letter-spacing: 0.05em;
 }
 
+.hud > div {
+  display: grid;
+  grid-template-columns: max-content 10ch;
+  align-items: baseline;
+  column-gap: 6px;
+}
+
 .hud .label {
   color: #9ca3af;
-  margin-right: 4px;
+}
+
+.hud .value {
+  justify-self: end;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
 }
 
 .panel {

@@ -19,6 +19,7 @@ const MODE_CODE: Record<AgentMode, number> = {
 const TARGET_CODE = {
   agent: 1,
   plant: 2,
+  corpse: 3,
 } as const
 
 export function applyBehaviourIntent(entity: number, intent: BehaviourIntent) {

@@ -11,16 +11,20 @@ import {
 
 import type {
   AgentState,
+  CorpseState,
   MoodKind,
   MoodTier,
   PlantState,
   SimulationSnapshot,
   Vector2,
+  WorldConfig,
 } from '@/types/sim'
 import type { CreaturePatternStyle } from '@/types/creatureDesign'
 import { CREATURE_DESIGN_DEFAULT } from '@/config/creatureDesignDefaults'
 import { VARIANT_PROFILE, computeDimensions, buildPalette, type CreatureDimensions } from '@/render/creatureLook'
 import { featureFlags } from '@/config/featureFlags'
+import { effectiveFatCapacity } from '@/ecs/lifecycle'
+import { generateRocks } from '@/sim/rocks'
 
 type AgentSpriteData = {
   container: Container
@@ -42,6 +46,11 @@ type PlantSpriteData = {
   sprite: Sprite
   swayPhase: number
   swaySpeed: number
+  active: boolean
+}
+
+type CorpseSpriteData = {
+  sprite: Sprite
   active: boolean
 }
 
@@ -98,6 +107,12 @@ export class PixiStage {
   #plantSprites = new Map<number, PlantSpriteData>()
   #plantPool: PlantSpriteData[] = []
 
+  #corpseSprites = new Map<number, CorpseSpriteData>()
+  #corpsePool: CorpseSpriteData[] = []
+
+  #rockSprites = new Map<number, Graphics>()
+  #rockKey: string | null = null
+
   #lastSnapshot: SimulationSnapshot | null = null
   #pendingHighlight: number | null = null
   #autoCentered = false
@@ -109,6 +124,7 @@ export class PixiStage {
   #accentTints: Record<'hunter' | 'prey', number> = { hunter: 0xffffff, prey: 0xffffff }
   #glowTints: Record<'hunter' | 'prey', number> = { hunter: 0xffffff, prey: 0xffffff }
   #plantTextures: Texture[] = []
+  #corpseTexture: Texture | null = null
   #legTexture?: Texture
   #finTexture?: Texture
   #wingTexture?: Texture
@@ -179,7 +195,9 @@ export class PixiStage {
       this.setWorldBounds(snapshot.config.bounds)
     }
 
+    this.#syncRocks(snapshot.config)
     this.#syncPlants(snapshot.plants)
+    this.#syncCorpses(snapshot.corpses ?? [])
     this.#syncAgents(snapshot.agents)
     if (!this.#autoCentered || this.#countVisibleAgents(snapshot) === 0) {
       this.#focusOnSnapshot(snapshot)
@@ -197,6 +215,33 @@ export class PixiStage {
     }
 
     this.#applyPendingFocus()
+  }
+
+  #syncRocks(config: WorldConfig) {
+    const key = `${config.rngSeed}:${config.bounds.x}:${config.bounds.y}`
+    if (this.#rockKey === key) return
+    this.#rockKey = key
+
+    // Clear previous rocks
+    this.#rockSprites.forEach((graphic) => {
+      graphic.removeFromParent()
+      graphic.destroy()
+    })
+    this.#rockSprites.clear()
+
+    const rocks = generateRocks(config)
+    rocks.forEach((rock) => {
+      const g = new Graphics()
+      drawPolygon(g, rock.outline)
+      const fill = rock.radius < 20 ? 0x475569 : rock.radius < 70 ? 0x334155 : 0x1f2937
+      g.fill({ color: fill, alpha: 0.95 })
+      g.stroke({ color: 0x0f172a, alpha: 0.9, width: Math.max(1, Math.round(rock.radius * 0.1)) })
+      g.position.set(rock.position.x, rock.position.y)
+      g.zIndex = 5
+      g.eventMode = 'none'
+      this.#entityLayer.addChild(g)
+      this.#rockSprites.set(rock.id, g)
+    })
   }
 
   setWorldBounds(bounds: Vector2) {
@@ -270,6 +315,15 @@ export class PixiStage {
       bake(this.#buildPlantGraphics(1)),
       bake(this.#buildPlantGraphics(2)),
     ]
+
+    const corpseGraphic = new Graphics()
+      .ellipse(0, 0, 22, 16)
+      .fill(0xffffff)
+      .ellipse(-10, -4, 10, 8)
+      .fill(0xffffff)
+      .ellipse(12, 6, 9, 7)
+      .fill(0xffffff)
+    this.#corpseTexture = bake(corpseGraphic)
 
     this.#legTexture = bake(this.#buildLegOverlayGraphic())
     this.#finTexture = bake(this.#buildFinOverlayGraphic())
@@ -452,6 +506,7 @@ export class PixiStage {
     // 3. Update or Create Agents
     for (const agent of agents) {
       const archetype = agent.dna.archetype === 'hunter' ? 'hunter' : 'prey'
+      const isScavenger = agent.dna.archetype === 'scavenger'
       let entry = this.#agentSprites.get(agent.id)
 
       // Create new (or get from pool)
@@ -482,8 +537,10 @@ export class PixiStage {
       entry.container.visible = true
 
       // Update Visuals
-      const weightScale = 1 + (agent.fatStore / Math.max(agent.dna.fatCapacity, 1)) * 0.7
-      const size = (6 + agent.dna.bodyMass * 3) * weightScale * 2
+      const mass = agent.mass ?? agent.dna.bodyMass
+      const fatCapacity = effectiveFatCapacity(agent.dna, mass)
+      const weightScale = 1 + (agent.fatStore / Math.max(fatCapacity, 1)) * 0.7
+      const size = (6 + mass * 3) * weightScale * 2
       const scale = size / baseSize
 
       entry.container.position.set(agent.position.x, agent.position.y)
@@ -496,6 +553,13 @@ export class PixiStage {
         entry.accent.tint = PINK_MASK
         entry.glow.tint = PINK_MASK
         entry.overlay.tint = PINK_MASK
+      } else if (isScavenger) {
+        // Scavengers are brown (dead-meat eaters).
+        const base = parseColor(agent.dna.familyColor)
+        entry.base.tint = base
+        entry.accent.tint = lightenColor(base, 0.2)
+        entry.glow.tint = lightenColor(base, 0.35)
+        entry.overlay.tint = this.#modeColor(agent)
       } else {
         entry.base.tint = parseColor(agent.dna.familyColor)
         entry.accent.tint = this.#accentTints[archetype]
@@ -644,6 +708,71 @@ export class PixiStage {
     }
     for (const id of idsToDelete) {
       this.#plantSprites.delete(id)
+    }
+  }
+
+  #syncCorpses(corpses: CorpseState[]) {
+    if (!this.#corpseTexture) return
+
+    for (const entry of this.#corpseSprites.values()) {
+      entry.active = false
+    }
+
+    const viewPadding = 80
+    const minX = -this.#camera.position.x / this.#cameraScale - viewPadding
+    const maxX = (-this.#camera.position.x + this.#app!.screen.width) / this.#cameraScale + viewPadding
+    const minY = -this.#camera.position.y / this.#cameraScale - viewPadding
+    const maxY = (-this.#camera.position.y + this.#app!.screen.height) / this.#cameraScale + viewPadding
+
+    const baseRadius = 22
+    for (const corpse of corpses) {
+      let entry = this.#corpseSprites.get(corpse.id)
+      if (!entry) {
+        if (this.#corpsePool.length > 0) {
+          entry = this.#corpsePool.pop()!
+          entry.sprite.visible = true
+        } else {
+          const sprite = new Sprite(this.#corpseTexture)
+          sprite.anchor.set(0.5)
+          sprite.eventMode = 'none'
+          sprite.zIndex = 6
+          this.#entityLayer.addChild(sprite)
+          entry = { sprite, active: true }
+        }
+        this.#corpseSprites.set(corpse.id, entry)
+      }
+
+      entry.active = true
+
+      if (
+        corpse.position.x < minX ||
+        corpse.position.x > maxX ||
+        corpse.position.y < minY ||
+        corpse.position.y > maxY
+      ) {
+        entry.sprite.visible = false
+        continue
+      }
+
+      entry.sprite.visible = true
+      entry.sprite.position.set(corpse.position.x, corpse.position.y)
+      const decayRatio = corpse.maxDecay > 0 ? corpse.decay / corpse.maxDecay : 0
+      entry.sprite.alpha = clamp(0.18 + clamp(decayRatio, 0, 1) * 0.7, 0.12, 0.92)
+      entry.sprite.tint = 0x8b5a2b
+      const r = Math.max(6, corpse.radius || 14)
+      entry.sprite.scale.set(r / baseRadius)
+    }
+
+    const idsToDelete: number[] = []
+    for (const [id, entry] of this.#corpseSprites) {
+      if (!entry.active) {
+        entry.sprite.visible = false
+        this.#corpsePool.push(entry)
+        idsToDelete.push(id)
+      }
+    }
+    for (const id of idsToDelete) {
+      this.#corpseSprites.delete(id)
     }
   }
 
@@ -1150,6 +1279,15 @@ export class PixiStage {
       entry.highlightTimeout = undefined
     }, 650)
   }
+}
+
+function drawPolygon(graphics: Graphics, points: Vector2[]) {
+  if (points.length === 0) return
+  graphics.moveTo(points[0].x, points[0].y)
+  for (let i = 1; i < points.length; i++) {
+    graphics.lineTo(points[i].x, points[i].y)
+  }
+  graphics.closePath()
 }
 
 function parseColor(hex: string) {

@@ -31,6 +31,7 @@
     baseSpeed: 'Speed',
     visionRange: 'Vision',
     hungerThreshold: 'Hunger threshold',
+    forageStartRatio: 'Forage start ratio',
     fatCapacity: 'Fat capacity',
     fatBurnThreshold: 'Burn threshold',
     patrolThreshold: 'Patrol threshold',
@@ -68,6 +69,7 @@
     circadianBias: 'Circadian bias',
     sleepEfficiency: 'Sleep efficiency',
     scavengerAffinity: 'Scavenger affinity',
+    preySizeTargetRatio: 'Preferred prey size',
   }
 
   let snapshots: SavedSnapshot[] = []

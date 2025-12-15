@@ -99,6 +99,7 @@ function normalizeLegacyCreature(id: string, creature: LegacyCreature): AgentSta
     baseSpeed: mapRange(speedGene, 0, 100, 180, 420),
     visionRange: mapRange(visionGene, 0, 100, 140, 360),
     hungerThreshold: hunger,
+    forageStartRatio: clamp(mapRange(hunger, 0, 100, 0.85, 0.55), 0.25, 0.95),
     fatCapacity: maxStorage,
     fatBurnThreshold: clamp(Number(creature.store_using_threshold ?? maxStorage * 0.6), 0, maxStorage),
     patrolThreshold: Number(creature.patrol_threshold ?? hunger * 0.7),
@@ -136,6 +137,7 @@ function normalizeLegacyCreature(id: string, creature: LegacyCreature): AgentSta
     speciesFear: clamp(Number(creature.danger_distance ?? 40) / 200, 0.1, 1),
     conspecificFear: clamp(Number(creature.escape_rate ?? 50) / 200, 0.05, 0.8),
     sizeFear: clamp(Number(creature.escape_rate ?? 50) / 120, 0.1, 1),
+    preySizeTargetRatio: type === 'hunter' ? 0.6 : 0.9,
     dependency: clamp(parseOr(creature.khudz, 0.5), 0, 1), // fallback key, default mid
     independenceAge: clamp(parseOr(creature.ageout, 20), 5, 60),
     bodyPlanVersion: BODY_PLAN_VERSION,

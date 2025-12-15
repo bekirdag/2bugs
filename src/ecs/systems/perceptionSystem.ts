@@ -1,7 +1,10 @@
 import {
   AgentMeta,
+  Body,
+  Corpse,
   DNA,
   Energy,
+  Heading,
   Intent,
   ModeState,
   Mood,
@@ -15,6 +18,53 @@ import { decodeMoodKind, encodeMoodKind, encodeMoodTier } from '../mood/moodCata
 import type { SimulationContext } from '../types'
 import type { ControlState, TargetRef } from '@/types/sim'
 import { clamp, distanceSquared } from '@/utils/math'
+
+function computeVisionFovRadians(archetype: string, awarenessGene: number) {
+  // Animals tend to have a limited forward field-of-view; prey generally have wider peripheral vision.
+  const base = archetype === 'hunter' ? (220 * Math.PI) / 180 : (260 * Math.PI) / 180
+  return clamp(base * (0.75 + clamp(awarenessGene, 0, 1) * 0.5), Math.PI * 0.6, Math.PI * 2)
+}
+
+function detectionChance(
+  headingCos: number,
+  headingSin: number,
+  dx: number,
+  dy: number,
+  dist: number,
+  maxDist: number,
+  awarenessGene: number,
+  targetCamo: number,
+  cosHalfFov: number,
+) {
+  // Within a very small radius, assume detection (touch/hearing).
+  if (dist <= 18) return 1
+
+  // Use dot products instead of atan2/angle wrapping:
+  // dot = cos(angleDiff) in [-1, 1]
+  const inv = 1 / Math.max(dist, 0.001)
+  const dirX = dx * inv
+  const dirY = dy * inv
+  const dot = dirX * headingCos + dirY * headingSin
+  const denom = cosHalfFov + 1
+  const peripheral = denom <= 0.0001 ? 0 : clamp((dot + 1) / denom, 0, 1) * 0.25
+  const fovFactor = dot >= cosHalfFov ? 1 : peripheral
+
+  const distFactor = clamp(1 - dist / Math.max(maxDist, 1), 0, 1)
+  const awarenessFactor = clamp(0.65 + awarenessGene * 0.7, 0.4, 1.35)
+  const camoFactor = clamp(1 - clamp(targetCamo, 0, 1) * 0.6, 0.2, 1)
+
+  return clamp((0.1 + distFactor * 0.9) * fovFactor * awarenessFactor * camoFactor, 0, 1)
+}
+
+function approximateBodyMass(ctx: SimulationContext, id: number, entity: number) {
+  const current = Body.mass[entity]
+  if (typeof current === 'number' && Number.isFinite(current) && current > 0) return current
+  const genome = ctx.genomes.get(id)
+  const m = genome?.bodyMass
+  if (typeof m === 'number' && Number.isFinite(m) && m > 0) return m
+  const fallback = (Energy.fatCapacity[entity] || 120) / 120
+  return Math.max(0.3, fallback)
+}
 
 export function perceptionSystem(ctx: SimulationContext, controls: ControlState) {
   const tick = ctx.tick
@@ -58,11 +108,17 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
     const vision = DNA.visionRange[entity] * (1 + (awareness - 0.5) * 0.6)
     const neighbors = ctx.agentIndex.query(mePos, vision)
 
+    const myBodyMass = approximateBodyMass(ctx, id, entity)
+    const preySizeTargetRatio =
+      archetype === 'hunter' ? clamp(genome?.preySizeTargetRatio ?? 0.6, 0.05, 1.5) : 1
+
     let threatLevel = 0
     let predatorTarget: TargetRef | null = null
     let closestPredatorDist = Infinity
     let bestPreyTarget: TargetRef | null = null
     let bestPreyWeight = -Infinity
+    let bestCarrionTarget: TargetRef | null = null
+    let bestCarrionWeight = -Infinity
     let allyCount = 0
     let allyProximity = 0
 
@@ -74,6 +130,11 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
     )
     const awarenessGene = genome?.awareness ?? DNA.awareness[entity] ?? 0.5
     const courageGene = genome?.bravery ?? 0.5
+    const fovRadians = computeVisionFovRadians(archetype, awarenessGene)
+    const cosHalfFov = Math.cos(fovRadians / 2)
+    const heading = Heading.angle[entity]
+    const headingCos = Math.cos(heading)
+    const headingSin = Math.sin(heading)
     let forcedFlee = false
     neighbors.forEach((bucket) => {
       if (bucket.id === id) return
@@ -81,8 +142,22 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
       if (otherEntity === undefined) return
       const otherType = decodeArchetype(AgentMeta.archetype[otherEntity])
       const otherPos = { x: Position.x[otherEntity], y: Position.y[otherEntity] }
-      const dist = Math.sqrt(distanceSquared(mePos, otherPos))
+      const dx = otherPos.x - mePos.x
+      const dy = otherPos.y - mePos.y
+      const dist = Math.sqrt(dx * dx + dy * dy)
       if (dist > vision) return
+      const seenChance = detectionChance(
+        headingCos,
+        headingSin,
+        dx,
+        dy,
+        dist,
+        vision,
+        awarenessGene,
+        DNA.camo[otherEntity] ?? 0,
+        cosHalfFov,
+      )
+      if (ctx.rng() > seenChance) return
 
       const sameSpecies = otherType === archetype
       const sameFamily = AgentMeta.familyColor[otherEntity] === AgentMeta.familyColor[entity]
@@ -90,23 +165,36 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
         allyCount += 1
         allyProximity += clamp(1 - dist / vision, 0, 1)
       }
-      const sizeRatio =
-        Energy.fatCapacity[otherEntity] / Math.max(Energy.fatCapacity[entity] || 1, 1)
-      const sizeFactor = clamp(sizeRatio - 1, -0.5, 2) * sizeFear
+      // Do not treat same-family conspecifics as threats; they are baseline allies.
+      if (sameSpecies && sameFamily) {
+        return
+      }
+      const otherMass = approximateBodyMass(ctx, bucket.id, otherEntity)
+      const sizeRatio = otherMass / Math.max(myBodyMass, 0.001)
+      // `sizeFear` is the sensitivity to size differences. Larger opponents are scarier; much smaller ones are discounted.
+      const sizeDelta = clamp(sizeRatio - 1, -0.95, 3)
+      const sizeMultiplier = clamp(1 + sizeDelta * sizeFear, 0.05, 3)
 
-      let threatBase = speciesFear
-      if (otherType === 'hunter' && archetype !== 'hunter') {
-        threatBase += DNA.fear[entity] ?? 0.3
-      } else if (!sameSpecies) {
-        threatBase += speciesFear
+      // Threat heuristics:
+      // - Same family: treat as safe/ally by default (no automatic fear response).
+      // - Same species but different family: mild conspecific wariness.
+      // - Different species: apply species fear; prey get extra predator fear from hunters.
+      let threatBase = 0
+      if (!sameSpecies) {
+        threatBase = speciesFear
+        if (otherType === 'hunter' && archetype !== 'hunter') {
+          // If the "predator" is much smaller than us, we should not overreact.
+          const predatorScale = clamp((sizeRatio - 0.6) / 0.6, 0, 1)
+          threatBase += (DNA.fear[entity] ?? 0.3) * predatorScale
+        }
       } else if (!sameFamily) {
-        threatBase += conspecificFear
+        threatBase = conspecificFear
       }
 
       const cowardice = clamp(DNA.cowardice[entity] ?? DNA.fear[entity] ?? 0.3, 0, 2)
       const proximity = clamp(1 - dist / vision, 0, 1)
       const threatScore = clamp(
-        (threatBase + cowardice) * (proximity + awarenessGene) * (1 + sizeFactor),
+        (threatBase + cowardice) * (proximity + awarenessGene) * sizeMultiplier,
         0,
         5,
       )
@@ -130,8 +218,18 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
       }
 
       if (dietAgents.includes(otherType) && hungerRatio < 1.1) {
-        const weight =
+        const baseWeight =
           (1 / Math.max(dist, 1)) * (0.6 + focus * 0.4) * (1 + aggression * 0.4) * awareness
+        let sizeBias = 1
+        if (archetype === 'hunter' && otherType === 'prey') {
+          const preyMass = approximateBodyMass(ctx, bucket.id, otherEntity)
+          const ratio = preyMass / Math.max(myBodyMass, 0.001)
+          const band = clamp(preySizeTargetRatio * 0.8 + 0.15, 0.15, 1.5)
+          sizeBias = clamp(1 - Math.abs(ratio - preySizeTargetRatio) / band, 0.05, 1.15)
+          // Strongly penalize taking on prey larger than self.
+          if (ratio > 1) sizeBias *= clamp(1 / ratio, 0.05, 1)
+        }
+        const weight = baseWeight * sizeBias
         if (weight > bestPreyWeight) {
           bestPreyWeight = weight
           bestPreyTarget = { kind: 'agent', id: AgentMeta.id[otherEntity] }
@@ -155,13 +253,78 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
           if (dist <= vision) {
             const currentWeight =
               (1 / Math.max(dist, 1)) * (0.6 + focus * 0.4) * (1 + aggression * 0.4) * awareness
+            let sizeBias = 1
+            if (archetype === 'hunter' && currentType === 'prey') {
+              const preyMass = approximateBodyMass(ctx, currentTargetId, currentTargetEntity)
+              const ratio = preyMass / Math.max(myBodyMass, 0.001)
+              const band = clamp(preySizeTargetRatio * 0.8 + 0.15, 0.15, 1.5)
+              sizeBias = clamp(1 - Math.abs(ratio - preySizeTargetRatio) / band, 0.05, 1.15)
+              if (ratio > 1) sizeBias *= clamp(1 / ratio, 0.05, 1)
+            }
             if (currentWeight * stickiness >= bestPreyWeight) {
               bestPreyTarget = { kind: 'agent', id: currentTargetId }
-              bestPreyWeight = currentWeight
+              bestPreyWeight = currentWeight * sizeBias
             }
           }
         }
       }
+    }
+
+    const isScavenger = archetype === 'scavenger'
+    const scavengerAffinity = clamp(isScavenger ? 1 : (genome?.scavengerAffinity ?? 0), 0, 1)
+    if ((dietAgents.length || isScavenger) && (hungerRatio < 0.85 || bestPreyTarget === null)) {
+      const corpseCandidates = ctx.corpseIndex.query(mePos, vision)
+      corpseCandidates.forEach((bucket) => {
+        const corpseEntity = ctx.corpses.get(bucket.id)
+        if (corpseEntity === undefined) return
+        const nutrients = Corpse.nutrients[corpseEntity] || 0
+        if (nutrients <= 0.1) return
+        const corpsePos = { x: Position.x[corpseEntity], y: Position.y[corpseEntity] }
+        const dx = corpsePos.x - mePos.x
+        const dy = corpsePos.y - mePos.y
+        const dist = Math.sqrt(dx * dx + dy * dy)
+        if (dist > vision) return
+        const seenChance = detectionChance(headingCos, headingSin, dx, dy, dist, vision, awarenessGene, 0, cosHalfFov)
+        if (ctx.rng() > seenChance) return
+        const hungerNeed = clamp(1 - hungerRatio, 0, 1)
+        const weight =
+          (1 / Math.max(dist, 1)) *
+          (0.65 + focus * 0.35) *
+          (0.85 + hungerNeed * 1.3) *
+          (0.85 + scavengerAffinity * 0.6) *
+          (0.7 + clamp(nutrients / 420, 0, 1.5))
+        if (weight > bestCarrionWeight) {
+          bestCarrionWeight = weight
+          bestCarrionTarget = { kind: 'corpse', id: bucket.id }
+        }
+      })
+    }
+
+    if (ModeState.targetType[entity] === 3) {
+      const currentCorpseId = ModeState.targetId[entity]
+      const corpseEntity = ctx.corpses.get(currentCorpseId)
+      if (corpseEntity !== undefined && (Corpse.nutrients[corpseEntity] || 0) > 0.1) {
+        const corpsePos = { x: Position.x[corpseEntity], y: Position.y[corpseEntity] }
+        const dx = corpsePos.x - mePos.x
+        const dy = corpsePos.y - mePos.y
+        const dist = Math.sqrt(dx * dx + dy * dy)
+        if (dist <= vision) {
+          const currentWeight =
+            (1 / Math.max(dist, 1)) *
+            (0.65 + focus * 0.35) *
+            (0.85 + clamp(1 - hungerRatio, 0, 1) * 1.3) *
+            (0.85 + scavengerAffinity * 0.6)
+          if (currentWeight * stickiness >= bestCarrionWeight) {
+            bestCarrionTarget = { kind: 'corpse', id: currentCorpseId }
+            bestCarrionWeight = currentWeight
+          }
+        }
+      }
+    }
+
+    if (bestCarrionTarget && (bestPreyTarget === null || bestCarrionWeight > bestPreyWeight * 0.9)) {
+      bestPreyTarget = bestCarrionTarget
+      bestPreyWeight = Math.max(bestPreyWeight, bestCarrionWeight)
     }
 
     // Primitive flight reflex: override any ongoing behaviour if predator is close enough
@@ -179,7 +342,11 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
         const plantEntity = ctx.plants.get(bucket.id)
         if (plantEntity === undefined) return
         const plantPos = { x: Position.x[plantEntity], y: Position.y[plantEntity] }
-        const dist = Math.sqrt(distanceSquared(mePos, plantPos))
+        const dx = plantPos.x - mePos.x
+        const dy = plantPos.y - mePos.y
+        const dist = Math.sqrt(dx * dx + dy * dy)
+        const seenChance = detectionChance(headingCos, headingSin, dx, dy, dist, vision, awarenessGene, 0, cosHalfFov)
+        if (ctx.rng() > seenChance) return
         const weight =
           (Energy.fatCapacity[entity] * 0.2 + 1) * (1 / Math.max(dist, 1)) * (hungerRatio < 0.55 ? 1.2 : 1)
         if (weight > bestPlantWeight) {
@@ -210,6 +377,7 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
     const socialCohesion = allyCount === 0 ? 0 : clamp(allyProximity / allyCount, 0, 1)
     const moodInput: MoodMachineInput = {
       hungerRatio,
+      forageStartRatio: clamp(genome?.forageStartRatio ?? 0.65, 0.25, 0.95),
       fatigue,
       sleepPressure,
       libido: libidoRatio,
@@ -236,6 +404,18 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
       decision.behaviour.mode = 'flee'
       decision.behaviour.target = predatorTarget
       ModeState.dangerTimer[entity] = Math.max(ModeState.dangerTimer[entity], Math.max(1.25, escapeDuration))
+    }
+
+    // Scavengers only eat dead bodies: never graze plants or hunt live animals.
+    if (archetype === 'scavenger') {
+      const forageStartRatio = clamp(genome?.forageStartRatio ?? 0.65, 0.25, 0.95)
+      if (bestCarrionTarget && hungerRatio < forageStartRatio) {
+        decision.behaviour.mode = 'hunt'
+        decision.behaviour.target = bestCarrionTarget
+      } else if (decision.behaviour.mode === 'hunt' || decision.behaviour.mode === 'graze') {
+        decision.behaviour.mode = 'patrol'
+        decision.behaviour.target = null
+      }
     }
 
     // Align behaviour with explicit search targets by mood
@@ -294,6 +474,14 @@ function findMateTarget(
   const libido = Reproduction.libido[entity]
   const libidoThreshold = Reproduction.libidoThreshold[entity] || 0.6
   if (libido < libidoThreshold) return null
+  const genome = ctx.genomes.get(entityId)
+  const awarenessGene = genome?.awareness ?? DNA.awareness[entity] ?? 0.5
+  const vision = DNA.visionRange[entity] * (1 + (clamp(DNA.awareness[entity] ?? 0.5, 0, 1) - 0.5) * 0.6)
+  const fovRadians = computeVisionFovRadians(decodeArchetype(AgentMeta.archetype[entity]), awarenessGene)
+  const cosHalfFov = Math.cos(fovRadians / 2)
+  const heading = Heading.angle[entity]
+  const headingCos = Math.cos(heading)
+  const headingSin = Math.sin(heading)
   let bestId: number | null = null
   let bestDist = Infinity
   neighbors.forEach((bucket) => {
@@ -303,9 +491,21 @@ function findMateTarget(
     if (AgentMeta.archetype[mateEntity] !== AgentMeta.archetype[entity]) return
     if (ModeState.sexCooldown[mateEntity] > 0) return
     if (Reproduction.libido[mateEntity] < (Reproduction.libidoThreshold[mateEntity] || 0.6)) return
-    const dx = Position.x[entity] - Position.x[mateEntity]
-    const dy = Position.y[entity] - Position.y[mateEntity]
+    const dx = Position.x[mateEntity] - Position.x[entity]
+    const dy = Position.y[mateEntity] - Position.y[entity]
     const dist = Math.sqrt(dx * dx + dy * dy)
+    const seenChance = detectionChance(
+      headingCos,
+      headingSin,
+      dx,
+      dy,
+      dist,
+      vision,
+      awarenessGene,
+      DNA.camo[mateEntity] ?? 0,
+      cosHalfFov,
+    )
+    if (ctx.rng() > seenChance) return
     if (dist < bestDist) {
       bestDist = dist
       bestId = bucket.id
@@ -333,6 +533,6 @@ function decodeArchetype(code: number): 'hunter' | 'prey' | 'scavenger' {
 
 function archetypeDiet(archetype: string) {
   if (archetype === 'hunter') return ['prey']
-  if (archetype === 'scavenger') return ['prey', 'plant']
+  if (archetype === 'scavenger') return []
   return ['plant']
 }

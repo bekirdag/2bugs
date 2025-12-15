@@ -3,6 +3,8 @@ import type { IWorld } from 'bitecs'
 
 import {
   AgentMeta,
+  Body,
+  Corpse,
   DNA,
   Energy,
   GenomeFlags,
@@ -10,6 +12,7 @@ import {
   Intent,
   ModeState,
   Mood,
+  Obstacle,
   Perception,
   PlantStats,
   Position,
@@ -19,7 +22,7 @@ import {
 } from './components'
 import { decodeMoodKind, decodeMoodTier, encodeMoodKind, encodeMoodTier } from './mood/moodCatalog'
 
-import type { AgentState, PlantState, DNA as DNAState } from '@/types/sim'
+import type { AgentState, CorpseState, PlantState, DNA as DNAState } from '@/types/sim'
 import { clamp } from '@/utils/math'
 import { BODY_PLAN_VERSION, createBaseBodyPlan, cloneBodyPlan } from '@/ecs/bodyPlan'
 
@@ -32,6 +35,7 @@ export const COMPONENTS = {
   Velocity,
   Heading,
   AgentMeta,
+  Body,
   DNA,
   GenomeFlags,
   Energy,
@@ -41,6 +45,8 @@ export const COMPONENTS = {
   Perception,
   Reproduction,
   PlantStats,
+  Obstacle,
+  Corpse,
 } as const
 
 export function createRegistry(world: IWorld): EntityRegistry {
@@ -55,6 +61,7 @@ export function spawnAgentEntity(registry: EntityRegistry, state: AgentState): n
   addComponent(registry.world, Velocity, entity)
   addComponent(registry.world, Heading, entity)
   addComponent(registry.world, AgentMeta, entity)
+  addComponent(registry.world, Body, entity)
   addComponent(registry.world, DNA, entity)
   addComponent(registry.world, GenomeFlags, entity)
   addComponent(registry.world, Energy, entity)
@@ -78,6 +85,7 @@ export function hydrateAgentEntity(entity: number, state: AgentState) {
   AgentMeta.id[entity] = state.id
   AgentMeta.archetype[entity] = archetypeCode(state)
   AgentMeta.familyColor[entity] = parseInt(state.dna.familyColor.replace('#', ''), 16)
+  Body.mass[entity] = state.mass ?? state.dna.bodyMass
   DNA.baseSpeed[entity] = state.dna.baseSpeed
   DNA.visionRange[entity] = state.dna.visionRange
   DNA.aggression[entity] = state.dna.aggression
@@ -128,7 +136,7 @@ export function hydrateAgentEntity(entity: number, state: AgentState) {
   GenomeFlags.mutationMask[entity] = state.mutationMask ?? 0
 }
 
-export function serializeAgentEntity(entity: number, genomeOverride?: DNAState): AgentState {
+export function serializeAgentEntity(entity: number, ageYears = 0, genomeOverride?: DNAState): AgentState {
   let dnaState = composeSnapshotDNA(entity)
   if (genomeOverride) {
     dnaState = {
@@ -140,6 +148,7 @@ export function serializeAgentEntity(entity: number, genomeOverride?: DNAState):
   return {
     id: AgentMeta.id[entity],
     dna: dnaState,
+    mass: Body.mass[entity] || dnaState.bodyMass,
     position: {
       x: Position.x[entity],
       y: Position.y[entity],
@@ -151,7 +160,7 @@ export function serializeAgentEntity(entity: number, genomeOverride?: DNAState):
     heading: Heading.angle[entity],
     energy: Energy.value[entity],
     fatStore: Energy.fatStore[entity],
-    age: 0,
+    age: ageYears,
     mode: decodeMode(ModeState.mode[entity]),
     mood: {
       stress: Mood.stress[entity],
@@ -193,6 +202,35 @@ export function spawnPlantEntity(registry: EntityRegistry, plant: PlantState): n
   return entity
 }
 
+export function spawnRockEntity(
+  registry: EntityRegistry,
+  rock: { position: { x: number; y: number }; radius: number },
+): number {
+  const entity = addEntity(registry.world)
+  addComponent(registry.world, Position, entity)
+  addComponent(registry.world, Obstacle, entity)
+  Position.x[entity] = rock.position.x
+  Position.y[entity] = rock.position.y
+  Obstacle.radius[entity] = rock.radius
+  return entity
+}
+
+export function spawnCorpseEntity(
+  registry: EntityRegistry,
+  corpse: { position: { x: number; y: number }; radius: number; nutrients: number; decay: number; maxDecay: number },
+): number {
+  const entity = addEntity(registry.world)
+  addComponent(registry.world, Position, entity)
+  addComponent(registry.world, Corpse, entity)
+  Position.x[entity] = corpse.position.x
+  Position.y[entity] = corpse.position.y
+  Corpse.radius[entity] = corpse.radius
+  Corpse.nutrients[entity] = corpse.nutrients
+  Corpse.decay[entity] = corpse.decay
+  Corpse.maxDecay[entity] = corpse.maxDecay
+  return entity
+}
+
 export function serializePlantEntity(entity: number, id: number): PlantState {
   return {
     id,
@@ -211,6 +249,17 @@ export function serializePlantEntity(entity: number, id: number): PlantState {
     },
     size: PlantStats.biomass[entity],
     moisture: PlantStats.moisture[entity],
+  }
+}
+
+export function serializeCorpseEntity(entity: number, id: number): CorpseState {
+  return {
+    id,
+    position: { x: Position.x[entity], y: Position.y[entity] },
+    radius: Corpse.radius[entity],
+    nutrients: Corpse.nutrients[entity],
+    decay: Corpse.decay[entity],
+    maxDecay: Corpse.maxDecay[entity],
   }
 }
 
@@ -280,13 +329,17 @@ function encodeTarget(kind: NonNullable<AgentState['target']>['kind']): number {
       return 1
     case 'plant':
       return 2
+    case 'corpse':
+      return 3
     default:
       return 0
   }
 }
 
 function decodeTarget(code: number): NonNullable<AgentState['target']>['kind'] {
-  return code === 2 ? 'plant' : 'agent'
+  if (code === 2) return 'plant'
+  if (code === 3) return 'corpse'
+  return 'agent'
 }
 
 function composeSnapshotDNA(entity: number): DNAState {
@@ -300,6 +353,7 @@ function composeSnapshotDNA(entity: number): DNAState {
   const fatCapacity = Energy.fatCapacity[entity] || 100
   const metabolism = Energy.metabolism[entity] || 8
   const vision = DNA.visionRange[entity] || 200
+  const forageStartRatio = DNA.curiosity[entity] ? clamp(0.55 + (DNA.curiosity[entity] ?? 0.3) * 0.35, 0.35, 0.95) : 0.65
   const cowardice = DNA.cowardice[entity] ?? DNA.fear[entity] ?? 0.3
   const speciesFear = DNA.speciesFear[entity] ?? fear
   const conspecificFear = DNA.conspecificFear[entity] ?? 0.25
@@ -314,6 +368,7 @@ function composeSnapshotDNA(entity: number): DNAState {
     baseSpeed: DNA.baseSpeed[entity] || 200,
     visionRange: vision,
     hungerThreshold: metabolism * 8,
+    forageStartRatio,
     fatCapacity,
     fatBurnThreshold: fatCapacity * 0.5,
     patrolThreshold: curiosity * 100,
@@ -340,6 +395,7 @@ function composeSnapshotDNA(entity: number): DNAState {
     speciesFear,
     conspecificFear,
     sizeFear,
+    preySizeTargetRatio: archetype === 'hunter' ? 0.6 : 0.9,
     dependency,
     independenceAge,
     camo: DNA.camo[entity] ?? 0.3,
@@ -350,6 +406,8 @@ function composeSnapshotDNA(entity: number): DNAState {
     preferredFood:
       archetype === 'hunter'
         ? ['prey']
+        : archetype === 'scavenger'
+          ? []
         : DNA.scavengerAffinity[entity] > 0.4
           ? ['plant', 'scavenger']
           : ['plant'],

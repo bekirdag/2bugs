@@ -90,12 +90,12 @@ Note: the `DNA` type includes some fields that are **persisted for legacy import
 - `escapeDuration`: base flee persistence duration (feeds into `dangerTimer`)
 - `speciesFear`: fear weighting toward other species
 - `conspecificFear`: fear weighting toward same-species non-family
-- `sizeFear`: fear weighting based on opponent size (fatCapacity as a proxy)
+- `sizeFear`: fear sensitivity to opponent size (uses `bodyMass` ratio; much larger opponents are scarier)
 
 **Combat**
-- `power`: attack strength
-- `defence`: damage mitigation factor
+- Strength is size-based: damage comes from the attacker/defender `bodyMass` ratio (very small animals do near-zero damage to much larger animals).
 - `fightPersistence`: influences whether agents stand and fight or flee under survival pressure (fed into the mood/decision model)
+- `preySizeTargetRatio`: (hunters) preferred prey size as a ratio of `preyMass / hunterMass`; smaller values bias toward attacking smaller prey (safer/more successful)
 
 **Reproduction**
 - `libidoThreshold`: libido needed to attempt mating

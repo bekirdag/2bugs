@@ -1,4 +1,4 @@
-import { DNA, Energy, Heading, ModeState, Position, Velocity } from '../components'
+import { Body, DNA, Energy, Heading, ModeState, Obstacle, Position, Reproduction, Velocity } from '../components'
 import type { SimulationContext } from '../types'
 
 import { clamp, lerpAngle } from '@/utils/math'
@@ -10,6 +10,7 @@ const MODE = {
   Graze: 2,
   Hunt: 3,
   Flee: 4,
+  Mate: 5,
   Patrol: 6,
   Fight: 7,
 } as const
@@ -89,9 +90,31 @@ export function movementSystem(
       Heading.angle[entity] = lerpAngle(Heading.angle[entity], desiredHeading, turnAmount)
     } else if (!resting) {
       const curiosity = clamp((DNA.curiosity[entity] ?? 0.2) + curiosityBias, 0.05, 1)
-      const jitter = (ctx.rng() - 0.5) * curiosity * 2
+      const hungerLine = ((genome?.hungerThreshold ?? Energy.metabolism[entity] * 8) + Energy.sleepDebt[entity]) * 1.0
+      const hungerRatio = clamp(Energy.value[entity] / Math.max(hungerLine, 1), 0, 2)
+      const forageStartRatio = clamp(genome?.forageStartRatio ?? 0.65, 0.25, 0.95)
+      const libidoRatio = clamp(
+        Reproduction.libido[entity] / Math.max(Reproduction.libidoThreshold[entity] || 0.6, 0.1),
+        0,
+        2,
+      )
+      const foodSearching = hungerRatio < forageStartRatio && mode !== MODE.Flee && mode !== MODE.Sleep
+      const mateSearching = mode === MODE.Mate && libidoRatio > forageStartRatio
+      const activeSearch = (foodSearching || mateSearching) && mode !== MODE.Fight
+
+      // If we have no sensed target but are "in need", widen the random walk so agents actively explore
+      // instead of slowly drifting in place.
+      const turnJitterScale = activeSearch ? 2.75 : 1
+      const jitter = (ctx.rng() - 0.5) * curiosity * 2 * turnJitterScale
       Heading.angle[entity] += jitter * step * clamp(turnFactor, 0.3, 3)
+
+      // Occasionally pick a new random direction to avoid local oscillation when searching.
+      if (activeSearch && ctx.rng() < step * (0.18 + curiosity * 0.22)) {
+        Heading.angle[entity] = ctx.rng() * Math.PI * 2
+      }
     }
+
+    applyRockAvoidance(ctx, entity, step)
 
     const stamina = DNA.stamina[entity] ?? 1
     const modeBoost =
@@ -115,7 +138,11 @@ export function movementSystem(
     } else if (biome === 'air' && flightStats) {
       locomotionBonus = clamp(0.7 + flightStats.lift, 0.6, 2)
     }
-    let targetSpeed = DNA.baseSpeed[entity] * locomotionBonus * modeBoost * fatPenalty
+    // Size → speed: in nature, bigger animals tend to be faster in most cases (more muscle mass),
+    // but fat and stamina still matter. Use diminishing returns so large animals don't become absurd.
+    const bodyMass = clamp(Body.mass[entity] || genome?.bodyMass || 1, 0.2, 50)
+    const sizeSpeedFactor = clamp(Math.pow(bodyMass, 0.35), 0.6, 3.2)
+    let targetSpeed = DNA.baseSpeed[entity] * sizeSpeedFactor * locomotionBonus * modeBoost * fatPenalty
 
     if (resting) {
       targetSpeed = 0
@@ -124,10 +151,32 @@ export function movementSystem(
     } else {
       const metabolismNeed = Math.max(Energy.metabolism[entity], 1)
       const energyRatio = clamp(Energy.value[entity] / (metabolismNeed * 2), 0, 1)
+      const hungerLine = (genome?.hungerThreshold ?? metabolismNeed * 8) + Energy.sleepDebt[entity]
+      const hungerRatio = clamp(Energy.value[entity] / Math.max(hungerLine, 1), 0, 2)
+      const forageStartRatio = clamp(genome?.forageStartRatio ?? 0.65, 0.25, 0.95)
+      const libidoRatio = clamp(
+        Reproduction.libido[entity] / Math.max(Reproduction.libidoThreshold[entity] || 0.6, 0.1),
+        0,
+        2,
+      )
+      const isSearching =
+        (hungerRatio < forageStartRatio || (mode === MODE.Mate && libidoRatio > forageStartRatio)) &&
+        mode !== MODE.Sleep &&
+        mode !== MODE.Flee
+
       const conserving = energyRatio < 0.4 && mode !== MODE.Flee && !holdPosition
       if (conserving) {
-        // Exponential drop keeps hungry agents mostly still while never fully freezing in danger.
-        targetSpeed *= energyRatio * energyRatio
+        if (isSearching) {
+          // Starving animals should still actively search, otherwise they can "freeze" before finding food.
+          // Soften the conserve curve and enforce a small minimum search speed.
+          targetSpeed *= clamp(0.25 + energyRatio, 0.25, 1)
+          const minSearchSpeed =
+            DNA.baseSpeed[entity] * sizeSpeedFactor * locomotionBonus * modeBoost * fatPenalty * 0.18
+          targetSpeed = Math.max(targetSpeed, minSearchSpeed)
+        } else {
+          // Exponential drop keeps hungry agents mostly still while never fully freezing in danger.
+          targetSpeed *= energyRatio * energyRatio
+        }
       }
     }
 
@@ -136,6 +185,8 @@ export function movementSystem(
 
     Position.x[entity] += Velocity.x[entity] * step
     Position.y[entity] += Velocity.y[entity] * step
+
+    resolveRockPenetration(ctx, entity)
 
     if (Position.x[entity] < 0) Position.x[entity] += bounds.x
     if (Position.x[entity] > bounds.x) Position.x[entity] -= bounds.x
@@ -154,9 +205,56 @@ function resolveTargetPosition(ctx: SimulationContext, entity: number) {
     const targetEntity = ctx.agents.get(targetId)
     if (targetEntity === undefined) return null
     return { x: Position.x[targetEntity], y: Position.y[targetEntity] }
-  } else {
+  } else if (targetType === 2) {
     const targetEntity = ctx.plants.get(targetId)
     if (targetEntity === undefined) return null
     return { x: Position.x[targetEntity], y: Position.y[targetEntity] }
+  } else if (targetType === 3) {
+    const targetEntity = ctx.corpses.get(targetId)
+    if (targetEntity === undefined) return null
+    return { x: Position.x[targetEntity], y: Position.y[targetEntity] }
+  }
+  return null
+}
+
+function applyRockAvoidance(ctx: SimulationContext, entity: number, step: number) {
+  if (ctx.rocks.size === 0) return
+  const me = { x: Position.x[entity], y: Position.y[entity] }
+  // Rocks are few; iterating them is faster than spatial-hash queries with huge radii (especially with big boulders).
+
+  let pushX = 0
+  let pushY = 0
+  for (const rockEntity of ctx.rocks.values()) {
+    const dx = me.x - Position.x[rockEntity]
+    const dy = me.y - Position.y[rockEntity]
+    const dist = Math.sqrt(dx * dx + dy * dy) || 0.001
+    const radius = (Obstacle.radius[rockEntity] || 0) + 18
+    const influence = radius + 70
+    if (dist >= influence) continue
+    const strength = clamp((influence - dist) / influence, 0, 1)
+    pushX += (dx / dist) * strength
+    pushY += (dy / dist) * strength
+  }
+
+  const mag = Math.sqrt(pushX * pushX + pushY * pushY)
+  if (mag <= 0.0001) return
+  const desired = Math.atan2(pushY / mag, pushX / mag)
+  const t = clamp(step * 0.9, 0, 1)
+  Heading.angle[entity] = lerpAngle(Heading.angle[entity], desired, t)
+}
+
+function resolveRockPenetration(ctx: SimulationContext, entity: number) {
+  if (ctx.rocks.size === 0) return
+  for (const rockEntity of ctx.rocks.values()) {
+    const dx = Position.x[entity] - Position.x[rockEntity]
+    const dy = Position.y[entity] - Position.y[rockEntity]
+    const dist = Math.sqrt(dx * dx + dy * dy) || 0.001
+    const min = (Obstacle.radius[rockEntity] || 0) + 16
+    if (dist >= min) continue
+    const nx = dx / dist
+    const ny = dy / dist
+    const overlap = min - dist
+    Position.x[entity] += nx * overlap
+    Position.y[entity] += ny * overlap
   }
 }

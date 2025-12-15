@@ -130,6 +130,7 @@ function crossoverDNA(
     baseSpeed: 0,
     visionRange: 0,
     hungerThreshold: 0,
+    forageStartRatio: 0,
     fatCapacity: 0,
     fatBurnThreshold: 0,
     patrolThreshold: 0,
@@ -159,6 +160,7 @@ function crossoverDNA(
     speciesFear: 0,
     conspecificFear: 0,
     sizeFear: 0,
+    preySizeTargetRatio: 0,
     cowardice: 0,
     fertility: 0,
     gestationCost: 0,
@@ -232,6 +234,7 @@ function extractDNA(ctx: SimulationContext, entity: number): DNA {
     baseSpeed: DNAComp.baseSpeed[entity],
     visionRange: DNAComp.visionRange[entity],
     hungerThreshold: Energy.metabolism[entity] * 8,
+    forageStartRatio: 0.65,
     fatCapacity: Energy.fatCapacity[entity],
     fatBurnThreshold: Energy.fatCapacity[entity] * 0.5,
     patrolThreshold: DNAComp.curiosity[entity] * 100,
@@ -262,7 +265,12 @@ function extractDNA(ctx: SimulationContext, entity: number): DNA {
     fertility: DNAComp.fertility[entity] || 0.3,
     gestationCost: DNAComp.gestationCost ? DNAComp.gestationCost[entity] : DNAComp.sleepNeed[entity] || 5,
     moodStability: 0.5,
-    preferredFood: ['plant'],
+    preferredFood:
+      decodeArchetype(AgentMeta.archetype[entity]) === 'hunter'
+        ? ['prey']
+        : decodeArchetype(AgentMeta.archetype[entity]) === 'scavenger'
+          ? []
+          : ['plant'],
     stamina: DNAComp.stamina ? DNAComp.stamina[entity] : 1,
     circadianBias: DNAComp.circadianBias ? DNAComp.circadianBias[entity] : 0,
     sleepEfficiency: DNAComp.sleepEfficiency ? DNAComp.sleepEfficiency[entity] : 0.8,
@@ -271,6 +279,7 @@ function extractDNA(ctx: SimulationContext, entity: number): DNA {
     speciesFear: DNAComp.speciesFear ? DNAComp.speciesFear[entity] : DNAComp.fear[entity] ?? 0.4,
     conspecificFear: DNAComp.conspecificFear ? DNAComp.conspecificFear[entity] : 0.25,
     sizeFear: DNAComp.sizeFear ? DNAComp.sizeFear[entity] : 0.5,
+    preySizeTargetRatio: decodeArchetype(AgentMeta.archetype[entity]) === 'hunter' ? 0.6 : 0.9,
     bodyPlanVersion: BODY_PLAN_VERSION,
     bodyPlan: createBaseBodyPlan(decodeArchetype(AgentMeta.archetype[entity]), 'land'),
   })

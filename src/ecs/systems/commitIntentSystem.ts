@@ -19,6 +19,11 @@ export function commitIntentSystem(ctx: SimulationContext) {
       desiredTargetId = 0
       Intent.targetType[entity] = 0
       Intent.targetId[entity] = 0
+    } else if (desiredTargetType === 3 && !ctx.corpses.has(desiredTargetId)) {
+      desiredTargetType = 0
+      desiredTargetId = 0
+      Intent.targetType[entity] = 0
+      Intent.targetId[entity] = 0
     }
     ModeState.targetType[entity] = desiredTargetType
     ModeState.targetId[entity] = desiredTargetId

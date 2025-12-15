@@ -27,15 +27,21 @@ export interface SimulationContext {
   rng: RNG
   agents: Map<number, number>
   plants: Map<number, number>
+  corpses: Map<number, number>
+  rocks: Map<number, number>
   genomes: Map<number, DNA>
   locomotion: Map<number, MovementProfile>
   agentIndex: SpatialHash<number>
   plantIndex: SpatialHash<number>
+  corpseIndex: SpatialHash<number>
+  rockIndex: SpatialHash<number>
   pregnancies: Map<number, { dna: DNA; mutationMask: number; parentId?: number }>
   birthTick: Map<number, number>
   parentMap: Map<number, number>
   nextAgentId: number
   nextPlantId: number
+  nextCorpseId: number
+  nextRockId: number
   metrics: SimulationMetrics
   lootSites: LootSite[]
 }

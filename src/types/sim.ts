@@ -15,6 +15,9 @@ export interface DNA {
   baseSpeed: number
   visionRange: number
   hungerThreshold: number
+  // When `Energy.value / hungerLine` drops below this ratio, the agent begins actively searching for food.
+  // Higher values => starts foraging earlier (more proactive); lower values => waits longer (more risk).
+  forageStartRatio: number
   fatCapacity: number
   fatBurnThreshold: number
   patrolThreshold: number
@@ -41,6 +44,9 @@ export interface DNA {
   speciesFear: number
   conspecificFear: number
   sizeFear: number
+  // For hunters: preferred prey size relative to self (preyMass / hunterMass).
+  // Smaller values bias toward hunting much smaller prey (safer/more successful).
+  preySizeTargetRatio: number
   dependency: number
   independenceAge: number
   camo: number
@@ -204,11 +210,14 @@ export interface MoodState {
 export interface AgentState {
   id: number
   dna: DNA
+  // Phenotype mass (changes over lifetime); defaults to `dna.bodyMass` if absent.
+  mass?: number
   position: Vector2
   velocity: Vector2
   heading: number
   energy: number
   fatStore: number
+  // Age in "simulation years" (used for lifetime leveling).
   age: number
   mode: AgentMode
   mood: MoodState
@@ -222,7 +231,7 @@ export interface AgentState {
   mutationMask?: number
 }
 
-export type TargetKind = 'agent' | 'plant'
+export type TargetKind = 'agent' | 'plant' | 'corpse'
 
 export interface TargetRef {
   id: number
@@ -245,6 +254,15 @@ export interface PlantState {
   position: Vector2
   size: number
   moisture: number
+}
+
+export interface CorpseState {
+  id: number
+  position: Vector2
+  radius: number
+  nutrients: number
+  decay: number
+  maxDecay: number
 }
 
 export interface WorldConfig {
@@ -270,6 +288,7 @@ export interface SimulationSnapshot {
   tick: number
   agents: AgentState[]
   plants: PlantState[]
+  corpses?: CorpseState[]
   stats: SimulationStats
 }
 
@@ -295,7 +314,8 @@ export interface ControlState {
 
 export const DEFAULT_WORLD_CONFIG: WorldConfig = {
   bounds: { x: 17280, y: 17280 },
-  maxAgents: 1080,
+  // 3 archetypes (hunter/prey/scavenger) -> default to 50 each.
+  maxAgents: 150,
   maxPlants: 900,
   timeStepMs: 50,
   spatialHashCellSize: 64,
@@ -306,7 +326,7 @@ export const DEFAULT_WORLD_CONFIG: WorldConfig = {
 export const DEFAULT_CONTROLS: ControlState = {
   speed: 1,
   paused: false,
-  maxAgents: 1080,
+  maxAgents: 150,
   maxPlants: 900,
   mutationRate: 0.01,
   flockingStrength: 1,
