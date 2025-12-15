@@ -23,17 +23,22 @@ export interface SimulationContext {
   registry: EntityRegistry
   config: WorldConfig
   tick: number
+  yearTicks: number
   nextRainMs: number
   rng: RNG
   agents: Map<number, number>
   plants: Map<number, number>
   corpses: Map<number, number>
+  manures: Map<number, number>
+  fertilizers: Map<number, number>
   rocks: Map<number, number>
   genomes: Map<number, DNA>
   locomotion: Map<number, MovementProfile>
   agentIndex: SpatialHash<number>
   plantIndex: SpatialHash<number>
   corpseIndex: SpatialHash<number>
+  manureIndex: SpatialHash<number>
+  fertilizerIndex: SpatialHash<number>
   rockIndex: SpatialHash<number>
   pregnancies: Map<number, { dna: DNA; mutationMask: number; parentId?: number }>
   birthTick: Map<number, number>
@@ -41,6 +46,8 @@ export interface SimulationContext {
   nextAgentId: number
   nextPlantId: number
   nextCorpseId: number
+  nextManureId: number
+  nextFertilizerId: number
   nextRockId: number
   metrics: SimulationMetrics
   lootSites: LootSite[]

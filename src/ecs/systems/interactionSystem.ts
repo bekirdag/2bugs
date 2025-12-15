@@ -1,6 +1,8 @@
 import { AgentMeta, Body, Corpse, DNA, Energy, Intent, ModeState, PlantStats, Position, ArchetypeCode } from '../components'
 import type { SimulationContext } from '../types'
 
+import { applyFoodIntake, eatingGreed } from '@/ecs/nutrition'
+
 const CONTACT_DISTANCE = 18
 const MODE = {
   Graze: 2,
@@ -15,7 +17,12 @@ export interface InteractionHooks {
   removeCorpse(id: number): void
 }
 
-export function interactionSystem(ctx: SimulationContext, hooks: InteractionHooks, aggressionBias = 0) {
+export function interactionSystem(
+  ctx: SimulationContext,
+  hooks: InteractionHooks,
+  aggressionBias = 0,
+  nutrition?: { maturityYears?: number; satiationMultiplier?: number; massBuildCost?: number },
+) {
   ctx.agents.forEach((entity, id) => {
     if (ModeState.mode[entity] === MODE.Mate) return
     const targetType = ModeState.targetType[entity]
@@ -42,9 +49,9 @@ export function interactionSystem(ctx: SimulationContext, hooks: InteractionHook
       if (AgentMeta.archetype[entity] === ArchetypeCode.Scavenger) return
       handleDuel(ctx, entity, id, targetId, hooks, aggressionBias)
     } else if (ModeState.mode[entity] === MODE.Graze && targetType === 2) {
-      handleGrazing(ctx, entity, targetId, hooks)
+      handleGrazing(ctx, entity, id, targetId, hooks, nutrition)
     } else if (ModeState.mode[entity] === MODE.Hunt && targetType === 3) {
-      handleScavenging(ctx, entity, id, targetId, hooks)
+      handleScavenging(ctx, entity, id, targetId, hooks, nutrition)
     }
   })
 }
@@ -143,19 +150,23 @@ function bodyMass(ctx: SimulationContext, entity: number) {
   return Math.max(0.2, fallback)
 }
 
-function handleGrazing(ctx: SimulationContext, preyEntity: number, plantId: number, hooks: InteractionHooks) {
+function handleGrazing(
+  ctx: SimulationContext,
+  preyEntity: number,
+  preyId: number,
+  plantId: number,
+  hooks: InteractionHooks,
+  nutrition?: { maturityYears?: number; satiationMultiplier?: number; massBuildCost?: number },
+) {
   const plantEntity = ctx.plants.get(plantId)
   if (plantEntity === undefined) return
 
-  const bite = 0.5
+  const greed = eatingGreed(ctx, preyId)
+  const bite = clamp(0.35 + greed * 0.9, 0.2, 1.4)
   PlantStats.biomass[plantEntity] -= bite
   PlantStats.moisture[plantEntity] = Math.max(0, PlantStats.moisture[plantEntity] - bite * 0.35)
   const energyGain = bite * PlantStats.nutrientDensity[plantEntity] * 120
-  Energy.value[preyEntity] += energyGain
-  Energy.fatStore[preyEntity] = Math.min(
-    Energy.fatCapacity[preyEntity],
-    Energy.fatStore[preyEntity] + energyGain * 0.4,
-  )
+  applyFoodIntake(ctx, preyEntity, preyId, energyGain, nutrition)
 
   if (PlantStats.biomass[plantEntity] <= 0.1) {
     hooks.removePlant(plantId)
@@ -168,12 +179,14 @@ function handleScavenging(
   eaterId: number,
   corpseId: number,
   hooks: InteractionHooks,
+  nutrition?: { maturityYears?: number; satiationMultiplier?: number; massBuildCost?: number },
 ) {
   const corpseEntity = ctx.corpses.get(corpseId)
   if (corpseEntity === undefined) return
 
+  const greed = eatingGreed(ctx, eaterId)
   const mass = bodyMass(ctx, eaterEntity)
-  const bite = clamp(14 + mass * 6, 10, 160)
+  const bite = clamp((14 + mass * 6) * (0.55 + greed), 8, 220)
   const available = Math.max(0, Corpse.nutrients[corpseEntity] || 0)
   if (available <= 0.1) {
     hooks.removeCorpse(corpseId)
@@ -182,12 +195,7 @@ function handleScavenging(
   const consumed = Math.min(available, bite)
   Corpse.nutrients[corpseEntity] = available - consumed
 
-  // Meat goes to immediate energy, with some stored as fat.
-  Energy.value[eaterEntity] += consumed * 0.9
-  Energy.fatStore[eaterEntity] = Math.min(
-    Energy.fatCapacity[eaterEntity],
-    Energy.fatStore[eaterEntity] + consumed * 0.35,
-  )
+  applyFoodIntake(ctx, eaterEntity, eaterId, consumed, nutrition)
 
   // If the corpse is depleted, remove it.
   if (Corpse.nutrients[corpseEntity] <= 0.1) {

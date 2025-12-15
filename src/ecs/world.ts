@@ -1,13 +1,17 @@
 import { createWorld, removeEntity } from 'bitecs'
 
-import { Body, DNA, Energy, Obstacle, Position } from './components'
+import { Body, DNA, Energy, Fertilizer, Obstacle, Position } from './components'
 import {
   createRegistry,
   serializeAgentEntity,
   serializeCorpseEntity,
+  serializeFertilizerEntity,
+  serializeManureEntity,
   serializePlantEntity,
   spawnAgentEntity,
   spawnCorpseEntity,
+  spawnFertilizerEntity,
+  spawnManureEntity,
   spawnPlantEntity,
   spawnRockEntity,
 } from './registry'
@@ -23,6 +27,7 @@ import { reproductionSystem } from './systems/reproductionSystem'
 import { flockingSystem } from './systems/flockingSystem'
 import { circadianSystem } from './systems/circadianSystem'
 import { corpseSystem } from './systems/corpseSystem'
+import { manureSystem } from './systems/manureSystem'
 
 import type {
   AgentState,
@@ -48,7 +53,15 @@ import {
   deriveMovementProfile,
   prepareDNA,
 } from '@/ecs/bodyPlan'
-import { ageTicksFromYears, ageYearsFromTicks, effectiveFatCapacity } from '@/ecs/lifecycle'
+import {
+  DEFAULT_MATURITY_YEARS,
+  SIM_YEAR_TICKS,
+  ageTicksFromYearsWithYearTicks,
+  ageYearsFromTicksWithYearTicks,
+  effectiveFatCapacity,
+  maxMassForLevel,
+} from '@/ecs/lifecycle'
+import { spawnPlantNearPosition } from '@/ecs/fertilization'
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now())
 
@@ -89,11 +102,14 @@ function createContext(config: WorldConfig): SimulationContext {
     registry,
     config,
     tick: 0,
+    yearTicks: SIM_YEAR_TICKS,
     nextRainMs: randRange(rng, 20_000, 300_000),
     rng,
     agents: new Map(),
     plants: new Map(),
     corpses: new Map(),
+    manures: new Map(),
+    fertilizers: new Map(),
     rocks: new Map(),
     genomes: new Map(),
     locomotion: new Map(),
@@ -103,10 +119,14 @@ function createContext(config: WorldConfig): SimulationContext {
     agentIndex: new SpatialHash<number>(config.spatialHashCellSize),
     plantIndex: new SpatialHash<number>(config.spatialHashCellSize),
     corpseIndex: new SpatialHash<number>(config.spatialHashCellSize),
+    manureIndex: new SpatialHash<number>(config.spatialHashCellSize),
+    fertilizerIndex: new SpatialHash<number>(config.spatialHashCellSize),
     rockIndex: new SpatialHash<number>(config.spatialHashCellSize),
     nextAgentId: 1,
     nextPlantId: 1,
     nextCorpseId: 1,
+    nextManureId: 1,
+    nextFertilizerId: 1,
     nextRockId: 1,
     metrics: { births: 0, deaths: 0, mutations: 0 },
     lootSites: [],
@@ -134,6 +154,8 @@ export function createWorldFromSnapshot(snapshot: SimulationSnapshot): Simulatio
   ctx.agents.clear()
   ctx.plants.clear()
   ctx.corpses.clear()
+  ctx.manures.clear()
+  ctx.fertilizers.clear()
   ctx.rocks.clear()
   ctx.genomes.clear()
   ctx.locomotion.clear()
@@ -143,10 +165,14 @@ export function createWorldFromSnapshot(snapshot: SimulationSnapshot): Simulatio
   ctx.nextAgentId = 1
   ctx.nextPlantId = 1
   ctx.nextCorpseId = 1
+  ctx.nextManureId = 1
+  ctx.nextFertilizerId = 1
   ctx.nextRockId = 1
   ctx.agentIndex = new SpatialHash<number>(ctx.config.spatialHashCellSize)
   ctx.plantIndex = new SpatialHash<number>(ctx.config.spatialHashCellSize)
   ctx.corpseIndex = new SpatialHash<number>(ctx.config.spatialHashCellSize)
+  ctx.manureIndex = new SpatialHash<number>(ctx.config.spatialHashCellSize)
+  ctx.fertilizerIndex = new SpatialHash<number>(ctx.config.spatialHashCellSize)
   ctx.rockIndex = new SpatialHash<number>(ctx.config.spatialHashCellSize)
   spawnRocks(ctx)
 
@@ -162,7 +188,7 @@ export function createWorldFromSnapshot(snapshot: SimulationSnapshot): Simulatio
       agent.id,
       deriveMovementProfile(preparedDNA.bodyPlan, preparedDNA.archetype, preparedDNA.biome),
     )
-    const ageTicks = ageTicksFromYears(agent.age ?? 0)
+    const ageTicks = ageTicksFromYearsWithYearTicks(agent.age ?? 0, ctx.yearTicks)
     ctx.birthTick.set(agent.id, snapshot.tick - ageTicks)
     ctx.agentIndex.set({ x: Position.x[entity], y: Position.y[entity] }, { id: agent.id, data: agent.id })
   })
@@ -179,9 +205,25 @@ export function createWorldFromSnapshot(snapshot: SimulationSnapshot): Simulatio
     ctx.corpseIndex.set(corpse.position, { id: corpse.id, data: corpse.id })
   })
 
+  const manures = snapshot.manures ?? []
+  manures.forEach((manure) => {
+    const entity = spawnManureEntity(ctx.registry, manure)
+    ctx.manures.set(manure.id, entity)
+    ctx.manureIndex.set(manure.position, { id: manure.id, data: manure.id })
+  })
+
+  const fertilizers = snapshot.fertilizers ?? []
+  fertilizers.forEach((fertilizer) => {
+    const entity = spawnFertilizerEntity(ctx.registry, fertilizer)
+    ctx.fertilizers.set(fertilizer.id, entity)
+    ctx.fertilizerIndex.set(fertilizer.position, { id: fertilizer.id, data: fertilizer.id })
+  })
+
   ctx.nextAgentId = Math.max(...snapshot.agents.map((a) => a.id), 0) + 1
   ctx.nextPlantId = Math.max(...snapshot.plants.map((p) => p.id), 0) + 1
   ctx.nextCorpseId = Math.max(...corpses.map((c) => c.id), 0) + 1
+  ctx.nextManureId = Math.max(...manures.map((m) => m.id), 0) + 1
+  ctx.nextFertilizerId = Math.max(...fertilizers.map((f) => f.id), 0) + 1
   ctx.metrics = {
     births: snapshot.stats.totalBirths,
     deaths: snapshot.stats.totalDeaths,
@@ -240,6 +282,7 @@ function spawnInitialPopulation(ctx: SimulationContext) {
 
 export function stepWorld(ctx: SimulationContext, dtMs: number, controls: ControlState): Record<string, number> {
   const dt = dtMs / 1000
+  ctx.yearTicks = Math.max(1, Math.floor(controls.yearTicks ?? ctx.yearTicks ?? SIM_YEAR_TICKS))
   const timings: Record<string, number> = {}
   const measure = <T>(label: string, fn: () => T): T => {
     const start = now()
@@ -253,21 +296,29 @@ export function stepWorld(ctx: SimulationContext, dtMs: number, controls: Contro
   measure('flocking', () => flockingSystem(ctx, dt, controls.flockingStrength ?? 1))
   measure('circadian', () => circadianSystem(ctx, dt))
   measure('lifecycle', () => lifecycleSystem(ctx))
-  measure('movement', () => movementSystem(ctx, dt, controls.speed, controls.curiosityBias ?? 0))
-  measure('interaction', () =>
-    interactionSystem(
-      ctx,
-      {
-        killAgent: (id) => killAgentToCorpse(ctx, id),
-        removePlant: (id) => removePlant(ctx, id),
-        removeCorpse: (id) => removeCorpse(ctx, id),
-      },
-      controls.aggressionBias ?? 0,
-    ),
+  measure('movement', () =>
+    movementSystem(ctx, dt, controls.speed, controls.curiosityBias ?? 0, controls.fatSpeedPenalty ?? 1),
   )
+	  measure('interaction', () =>
+	    interactionSystem(
+	      ctx,
+	      {
+	        killAgent: (id) => killAgentToCorpse(ctx, id),
+	        removePlant: (id) => removePlant(ctx, id),
+	        removeCorpse: (id) => removeCorpse(ctx, id),
+	      },
+	      controls.aggressionBias ?? 0,
+	      {
+	        maturityYears: controls.maturityYears ?? 6,
+	        satiationMultiplier: controls.satiationMultiplier ?? 1,
+	        massBuildCost: controls.massBuildCost ?? 35,
+	      },
+	    ),
+	  )
+  measure('manure', () => manureSystem(ctx, dt))
   const expired = measure('metabolism', () => metabolismSystem(ctx, dt, controls))
   measure('expire', () => expireAgents(ctx, expired))
-  measure('corpses', () => corpseSystem(ctx, dt, controls.maxPlants))
+  measure('corpses', () => corpseSystem(ctx, dt))
   measure('plantGrowth', () => plantGrowthSystem(ctx, dt))
   measure('reproduction', () =>
     reproductionSystem(
@@ -302,12 +353,14 @@ export function snapshotWorld(ctx: SimulationContext): SimulationSnapshot {
     agents: Array.from(ctx.agents.entries()).map(([id, entity]) =>
       serializeAgentEntity(
         entity,
-        ageYearsFromTicks(ctx.tick - (ctx.birthTick.get(id) ?? ctx.tick)),
+        ageYearsFromTicksWithYearTicks(ctx.tick - (ctx.birthTick.get(id) ?? ctx.tick), ctx.yearTicks),
         ctx.genomes.get(id),
       ),
     ),
     plants: Array.from(ctx.plants.entries()).map(([id, entity]) => serializePlantEntity(entity, id)),
     corpses: Array.from(ctx.corpses.entries()).map(([id, entity]) => serializeCorpseEntity(entity, id)),
+    manures: Array.from(ctx.manures.entries()).map(([id, entity]) => serializeManureEntity(entity, id)),
+    fertilizers: Array.from(ctx.fertilizers.entries()).map(([id, entity]) => serializeFertilizerEntity(entity, id)),
     stats: {
       totalBirths: ctx.metrics.births,
       totalDeaths: ctx.metrics.deaths,
@@ -338,6 +391,18 @@ function spawnAgent(
   // Newborns start much smaller, while seeded populations start closer to adult.
   const juvenileRatio = countBirth ? randRange(ctx.rng, 0.45, 0.75) : randRange(ctx.rng, 0.75, 1)
   const mass = Math.max(0.2, dna.bodyMass * juvenileRatio)
+  let ageYears = 0
+  if (!countBirth) {
+    // Seeded worlds should not start as all newborns; pick an age that can support the chosen starting mass.
+    let requiredLevel = 0
+    for (let level = 0; level <= DEFAULT_MATURITY_YEARS + 6; level++) {
+      if (maxMassForLevel(dna.bodyMass, level) >= mass) {
+        requiredLevel = level
+        break
+      }
+    }
+    ageYears = randRange(ctx.rng, requiredLevel, requiredLevel + 0.95)
+  }
   const fatCapacity = effectiveFatCapacity(dna, mass)
   const state: AgentState = {
     id,
@@ -351,7 +416,7 @@ function spawnAgent(
     heading: randRange(ctx.rng, 0, Math.PI * 2),
     energy: dna.hungerThreshold * 12,
     fatStore: fatCapacity * 0.8,
-    age: 0,
+    age: ageYears,
     mode: 'patrol',
     mood: { stress: 0.25, focus: 0.5, social: 0.5, fatigue: 0, kind: 'idle', tier: 'growth', intensity: 0 },
     escapeCooldown: 0,
@@ -375,7 +440,7 @@ function spawnAgent(
   if (countBirth) {
     ctx.metrics.births++
   }
-  ctx.birthTick.set(id, ctx.tick)
+  ctx.birthTick.set(id, ctx.tick - ageTicksFromYearsWithYearTicks(ageYears, ctx.yearTicks))
   if (parentId !== undefined) {
     ctx.parentMap.set(id, parentId)
   }
@@ -467,7 +532,36 @@ function handleRainyGrowth(ctx: SimulationContext, controls: ControlState, dtMs:
   while (ctx.nextRainMs <= 0) {
     const plantDeficit = controls.maxPlants - ctx.plants.size
     if (plantDeficit > 0) {
-      for (let i = 0; i < plantDeficit; i++) {
+      // Spawn new plants prioritizing fertilizer-rich soil first.
+      let remaining = plantDeficit
+      if (ctx.fertilizers.size > 0) {
+        const fertilizerIds = Array.from(ctx.fertilizers.keys())
+        for (let i = 0; i < plantDeficit; i++) {
+          if (remaining <= 0) break
+          // Prefer fertilizer patches that still have nutrients.
+          let picked: number | null = null
+          for (let attempts = 0; attempts < 12; attempts++) {
+            const candidateId = fertilizerIds[Math.floor(ctx.rng() * fertilizerIds.length)]
+            const candidateEntity = ctx.fertilizers.get(candidateId)
+            if (candidateEntity === undefined) continue
+            if ((Fertilizer.nutrients[candidateEntity] || 0) <= 0.1) continue
+            picked = candidateId
+            break
+          }
+          if (picked === null) break
+          const fertEntity = ctx.fertilizers.get(picked)
+          if (fertEntity === undefined) break
+          spawnPlantNearPosition(
+            ctx,
+            { x: Position.x[fertEntity], y: Position.y[fertEntity] },
+            Math.max(18, Fertilizer.radius[fertEntity] || 70),
+          )
+          remaining--
+        }
+      }
+
+      // Any remaining spawn budget is distributed across the rest of the world.
+      for (let i = 0; i < remaining; i++) {
         spawnPlant(ctx)
       }
     }
@@ -598,6 +692,29 @@ function buildDNA(ctx: SimulationContext, archetype: Archetype, biome: Biome = '
       : archetype === 'scavenger'
         ? randRange(ctx.rng, 0.65, 0.92)
         : randRange(ctx.rng, 0.5, 0.88)
+  const eatingGreed =
+    archetype === 'hunter'
+      ? randRange(ctx.rng, 0.55, 0.95)
+      : archetype === 'scavenger'
+        ? randRange(ctx.rng, 0.45, 0.85)
+        : randRange(ctx.rng, 0.35, 0.8)
+  const bodyMass = randRange(
+    ctx.rng,
+    archetype === 'hunter' ? 1.2 : archetype === 'scavenger' ? 0.9 : 0.8,
+    archetype === 'hunter' ? 20 : archetype === 'scavenger' ? 16 : 14,
+  )
+  // Keep fat capacity roughly proportional to body mass so "max fat limited by ratio" holds naturally.
+  // This treats `120` energy-units per 1.0 mass as the baseline conversion (see `ecs/lifecycle.ts`).
+  const fatCapacityRatio =
+    archetype === 'hunter'
+      ? randRange(ctx.rng, 0.6, 1.4)
+      : archetype === 'scavenger'
+        ? randRange(ctx.rng, 0.8, 1.8)
+        : randRange(ctx.rng, 0.7, 1.6)
+  const fatCapacity = bodyMass * 120 * fatCapacityRatio
+  const maturityBase = 1 + Math.pow(clamp(bodyMass, 0.2, 80), 0.55) * 2.6
+  const maturityArchetypeBias = archetype === 'hunter' ? 1.6 : archetype === 'scavenger' ? 1 : 0
+  const maturityAgeYears = clamp(maturityBase + maturityArchetypeBias + randRange(ctx.rng, -1.25, 1.75), 1, 20)
   const bodyPlan = createBaseBodyPlan(archetype, biome)
 
   return {
@@ -612,8 +729,10 @@ function buildDNA(ctx: SimulationContext, archetype: Archetype, biome: Biome = '
     visionRange: vision,
     hungerThreshold,
     forageStartRatio,
-    fatCapacity: randRange(ctx.rng, 120, 2000),
-    fatBurnThreshold: randRange(ctx.rng, 40, 70),
+    eatingGreed,
+    fatCapacity,
+    // Keep a reserve so animals don't instantly burn all storage.
+    fatBurnThreshold: fatCapacity * randRange(ctx.rng, 0.25, 0.65),
     patrolThreshold: randRange(ctx.rng, 0.4, 0.9) * hungerThreshold,
     aggression:
       archetype === 'hunter'
@@ -633,11 +752,7 @@ function buildDNA(ctx: SimulationContext, archetype: Archetype, biome: Biome = '
     libidoThreshold: randRange(ctx.rng, 0.4, 0.8),
     libidoGainRate: randRange(ctx.rng, 0.01, 0.05),
     mutationRate: randRange(ctx.rng, 0.005, 0.03),
-    bodyMass: randRange(
-      ctx.rng,
-      archetype === 'hunter' ? 1.2 : archetype === 'scavenger' ? 0.9 : 0.8,
-      archetype === 'hunter' ? 20 : archetype === 'scavenger' ? 16 : 14,
-    ),
+    bodyMass,
     metabolism: randRange(ctx.rng, 6, 12),
     turnRate: randRange(ctx.rng, 1, 3),
     curiosity: randRange(ctx.rng, 0.3, 0.9),
@@ -656,6 +771,7 @@ function buildDNA(ctx: SimulationContext, archetype: Archetype, biome: Biome = '
     fertility: randRange(ctx.rng, 0.25, 0.8),
     gestationCost: randRange(ctx.rng, 5, 20),
     moodStability: randRange(ctx.rng, 0.2, 0.9),
+    maturityAgeYears,
     // Scavengers only eat dead meat (corpse entities), not plants or live animals.
     preferredFood: archetype === 'hunter' ? ['prey'] : archetype === 'scavenger' ? [] : ['plant'],
     stamina: randRange(ctx.rng, 0.7, 1.4),

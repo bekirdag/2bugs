@@ -12,6 +12,8 @@ import {
 import type {
   AgentState,
   CorpseState,
+  FertilizerState,
+  ManureState,
   MoodKind,
   MoodTier,
   PlantState,
@@ -50,6 +52,16 @@ type PlantSpriteData = {
 }
 
 type CorpseSpriteData = {
+  sprite: Sprite
+  active: boolean
+}
+
+type ManureSpriteData = {
+  sprite: Sprite
+  active: boolean
+}
+
+type FertilizerSpriteData = {
   sprite: Sprite
   active: boolean
 }
@@ -110,6 +122,12 @@ export class PixiStage {
   #corpseSprites = new Map<number, CorpseSpriteData>()
   #corpsePool: CorpseSpriteData[] = []
 
+  #manureSprites = new Map<number, ManureSpriteData>()
+  #manurePool: ManureSpriteData[] = []
+
+  #fertilizerSprites = new Map<number, FertilizerSpriteData>()
+  #fertilizerPool: FertilizerSpriteData[] = []
+
   #rockSprites = new Map<number, Graphics>()
   #rockKey: string | null = null
 
@@ -151,7 +169,7 @@ export class PixiStage {
     this.#app = new Application()
     
     await this.#app.init({
-      background: '#050913',
+      background: '#d8c8a0',
       antialias: false, // Optimization: Disable MSAA for performance with many agents
       resizeTo: host,
       hello: false,
@@ -197,7 +215,9 @@ export class PixiStage {
 
     this.#syncRocks(snapshot.config)
     this.#syncPlants(snapshot.plants)
+    this.#syncFertilizers(snapshot.fertilizers ?? [])
     this.#syncCorpses(snapshot.corpses ?? [])
+    this.#syncManures(snapshot.manures ?? [])
     this.#syncAgents(snapshot.agents)
     if (!this.#autoCentered || this.#countVisibleAgents(snapshot) === 0) {
       this.#focusOnSnapshot(snapshot)
@@ -651,7 +671,7 @@ export class PixiStage {
     }
 
     // Culling bounds (same as agents)
-    const viewPadding = 50
+    const viewPadding = 100
     const minX = -this.#camera.position.x / this.#cameraScale - viewPadding
     const maxX = (-this.#camera.position.x + this.#app!.screen.width) / this.#cameraScale + viewPadding
     const minY = -this.#camera.position.y / this.#cameraScale - viewPadding
@@ -694,7 +714,7 @@ export class PixiStage {
       entry.sprite.position.set(plant.position.x, plant.position.y)
       entry.sprite.tint = parseColor(plant.dna.pigment)
       const baseScale = 0.5 + plant.size * 0.4
-      entry.sprite.scale.set(baseScale)
+      entry.sprite.scale.set(baseScale * 4)
     }
 
     // Return to pool
@@ -773,6 +793,138 @@ export class PixiStage {
     }
     for (const id of idsToDelete) {
       this.#corpseSprites.delete(id)
+    }
+  }
+
+  #syncManures(manures: ManureState[]) {
+    if (!this.#corpseTexture) return
+
+    for (const entry of this.#manureSprites.values()) {
+      entry.active = false
+    }
+
+    const viewPadding = 80
+    const minX = -this.#camera.position.x / this.#cameraScale - viewPadding
+    const maxX = (-this.#camera.position.x + this.#app!.screen.width) / this.#cameraScale + viewPadding
+    const minY = -this.#camera.position.y / this.#cameraScale - viewPadding
+    const maxY = (-this.#camera.position.y + this.#app!.screen.height) / this.#cameraScale + viewPadding
+
+    const baseRadius = 22
+    for (const manure of manures) {
+      let entry = this.#manureSprites.get(manure.id)
+      if (!entry) {
+        if (this.#manurePool.length > 0) {
+          entry = this.#manurePool.pop()!
+          entry.sprite.visible = true
+        } else {
+          const sprite = new Sprite(this.#corpseTexture)
+          sprite.anchor.set(0.5)
+          sprite.eventMode = 'none'
+          sprite.zIndex = 6
+          this.#entityLayer.addChild(sprite)
+          entry = { sprite, active: true }
+        }
+        this.#manureSprites.set(manure.id, entry)
+      }
+
+      entry.active = true
+
+      if (
+        manure.position.x < minX ||
+        manure.position.x > maxX ||
+        manure.position.y < minY ||
+        manure.position.y > maxY
+      ) {
+        entry.sprite.visible = false
+        continue
+      }
+
+      entry.sprite.visible = true
+      entry.sprite.position.set(manure.position.x, manure.position.y)
+      const decayRatio = manure.maxDecay > 0 ? manure.decay / manure.maxDecay : 0
+      entry.sprite.alpha = clamp(0.2 + clamp(decayRatio, 0, 1) * 0.75, 0.12, 0.95)
+      entry.sprite.tint = 0x6b3f1f
+      const r = Math.max(3, manure.radius || 6)
+      entry.sprite.scale.set(r / baseRadius)
+    }
+
+    const idsToDelete: number[] = []
+    for (const [id, entry] of this.#manureSprites) {
+      if (!entry.active) {
+        entry.sprite.visible = false
+        this.#manurePool.push(entry)
+        idsToDelete.push(id)
+      }
+    }
+    for (const id of idsToDelete) {
+      this.#manureSprites.delete(id)
+    }
+  }
+
+  #syncFertilizers(fertilizers: FertilizerState[]) {
+    if (!this.#corpseTexture) return
+
+    for (const entry of this.#fertilizerSprites.values()) {
+      entry.active = false
+    }
+
+    const viewPadding = 120
+    const minX = -this.#camera.position.x / this.#cameraScale - viewPadding
+    const maxX = (-this.#camera.position.x + this.#app!.screen.width) / this.#cameraScale + viewPadding
+    const minY = -this.#camera.position.y / this.#cameraScale - viewPadding
+    const maxY = (-this.#camera.position.y + this.#app!.screen.height) / this.#cameraScale + viewPadding
+
+    const baseRadius = 22
+    for (const fertilizer of fertilizers) {
+      let entry = this.#fertilizerSprites.get(fertilizer.id)
+      if (!entry) {
+        if (this.#fertilizerPool.length > 0) {
+          entry = this.#fertilizerPool.pop()!
+          entry.sprite.visible = true
+        } else {
+          const sprite = new Sprite(this.#corpseTexture)
+          sprite.anchor.set(0.5)
+          sprite.eventMode = 'none'
+          // Under plants/corpses; looks like a soil patch.
+          sprite.zIndex = -1
+          this.#entityLayer.addChild(sprite)
+          entry = { sprite, active: true }
+        }
+        this.#fertilizerSprites.set(fertilizer.id, entry)
+      }
+
+      entry.active = true
+
+      if (
+        fertilizer.position.x < minX ||
+        fertilizer.position.x > maxX ||
+        fertilizer.position.y < minY ||
+        fertilizer.position.y > maxY
+      ) {
+        entry.sprite.visible = false
+        continue
+      }
+
+      entry.sprite.visible = true
+      entry.sprite.position.set(fertilizer.position.x, fertilizer.position.y)
+      entry.sprite.tint = 0xc9b08a
+      const r = Math.max(6, fertilizer.radius || 20)
+      entry.sprite.scale.set(r / baseRadius)
+      // Alpha scales with remaining nutrients so depleted patches fade.
+      const richness = clamp(Math.sqrt(Math.max(0, fertilizer.nutrients || 0)) / 220, 0, 1)
+      entry.sprite.alpha = clamp(0.08 + richness * 0.35, 0.06, 0.45)
+    }
+
+    const idsToDelete: number[] = []
+    for (const [id, entry] of this.#fertilizerSprites) {
+      if (!entry.active) {
+        entry.sprite.visible = false
+        this.#fertilizerPool.push(entry)
+        idsToDelete.push(id)
+      }
+    }
+    for (const id of idsToDelete) {
+      this.#fertilizerSprites.delete(id)
     }
   }
 

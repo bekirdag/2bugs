@@ -70,7 +70,8 @@ Note: the `DNA` type includes some fields that are **persisted for legacy import
 **Energy & survival**
 - `metabolism`: baseline energy drain (also used as a scaling reference for hunger/behavior thresholds)
 - `hungerThreshold`: hunger cutoff used by the worker’s hunger logic (falls back to `Energy.metabolism * 8` when missing)
-- `fatCapacity`: max fat storage (also used as a proxy for “size” in some interactions)
+- `eatingGreed`: appetite / overeating bias; increases bite size and raises the “satiation” line so more intake becomes fat (and some becomes body mass)
+- `fatCapacity`: adult fat storage cap at `dna.bodyMass` (runtime fat capacity scales with current `agent.mass`)
 - `fatBurnThreshold`: threshold (legacy: `store_using_threshold`) above which sleeping agents can burn fat into energy
 - `bodyMass`: impacts birth cost and the way weight changes visual size
 - `senseUpkeep`: extra energy drain for maintaining senses (derived from `bodyPlan.senses` when enabled)
@@ -158,7 +159,24 @@ The worker records a `mutationMask` bitset on births so the UI can show *which* 
 - `npm run build` – build a production bundle into `dist/`
 - `npm run preview` – serve the production bundle locally
 - `npm run check` – typecheck (`svelte-check` + `tsc`)
-- `npm test` – run the smoke suite (movement, reproduction, persistence, legacy)
+- `npm test` – run the smoke suite (legacy, movement, interaction, reproduction, persistence)
+
+## Lifetime, growth, and fat
+
+Animals have a lifetime “level” measured in **simulation years**:
+
+- `agent.age` is persisted as years in snapshots (computed from `ctx.tick - birthTick`).
+- One year is `SIM_YEAR_TICKS` (`modern-app/src/ecs/lifecycle.ts`), and `level = floor(ageYears)`.
+- Each level has a max allowed body mass: `maxMassForLevel(dna.bodyMass, level)`.
+- Fat capacity scales with the animal’s current mass (`effectiveFatCapacity`), and movement speed is penalized as fat ratio increases.
+- Eating fills energy up to a greed-scaled satiation line; excess intake is split into immediate body-mass gain (bounded by the level cap) and stored fat.
+
+Runtime tuning (UI):
+- `Maturity years` control changes how fast the level-based max-mass cap reaches `dna.bodyMass`.
+- `Year ticks` control changes how many simulation ticks make up one “year” (and therefore how fast agents level up).
+- `Satiation multiplier` control globally scales how much animals try to fill energy before storing excess.
+- `Mass build cost` control changes how much food is needed to convert surplus into body mass.
+- `Fat speed penalty` control scales how strongly fat ratio slows movement.
 
 ## Project layout
 

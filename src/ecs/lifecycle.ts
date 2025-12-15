@@ -27,9 +27,21 @@ export function ageYearsFromTicks(ageTicks: number): number {
   return ageTicks / SIM_YEAR_TICKS
 }
 
+export function ageYearsFromTicksWithYearTicks(ageTicks: number, yearTicks: number): number {
+  const denom = Math.max(1, Number.isFinite(yearTicks) ? yearTicks : SIM_YEAR_TICKS)
+  if (!Number.isFinite(ageTicks) || ageTicks <= 0) return 0
+  return ageTicks / denom
+}
+
 export function ageTicksFromYears(ageYears: number): number {
   if (!Number.isFinite(ageYears) || ageYears <= 0) return 0
   return ageYears * SIM_YEAR_TICKS
+}
+
+export function ageTicksFromYearsWithYearTicks(ageYears: number, yearTicks: number): number {
+  const mult = Math.max(1, Number.isFinite(yearTicks) ? yearTicks : SIM_YEAR_TICKS)
+  if (!Number.isFinite(ageYears) || ageYears <= 0) return 0
+  return ageYears * mult
 }
 
 function smoothstep(t: number): number {

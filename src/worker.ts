@@ -5,6 +5,8 @@ import type { MainToWorkerMessage, WorkerToMainMessage } from '@/types/messages'
 import { DEFAULT_CONTROLS, DEFAULT_WORLD_CONFIG } from '@/types/sim'
 import type { SimulationSnapshot } from '@/types/sim'
 import { effectiveFatCapacity } from '@/ecs/lifecycle'
+import { Body, Energy } from '@/ecs/components'
+import { SIM_YEAR_TICKS, levelFromAgeYears } from '@/ecs/lifecycle'
 
 const ctx: DedicatedWorkerGlobalScope = self as DedicatedWorkerGlobalScope
 
@@ -178,13 +180,21 @@ function summarizeGenesFromContext(ctxWorld: typeof world): Record<string, numbe
     scavenger: 0,
     metabolism: 0,
     awareness: 0,
+    greed: 0,
+    maturityAge: 0,
+    ageYears: 0,
+    level: 0,
+    mass: 0,
+    fatRatio: 0,
     stride: 0,
     fins: 0,
     wings: 0,
   }
-  const count = ctxWorld.genomes.size
+  const count = ctxWorld.agents.size
   if (!count) return {}
-  ctxWorld.genomes.forEach((dna) => {
+  ctxWorld.agents.forEach((entity, id) => {
+    const dna = ctxWorld.genomes.get(id)
+    if (!dna) return
     totals.speed += dna.baseSpeed
     totals.vision += dna.visionRange
     totals.aggression += dna.aggression
@@ -192,6 +202,21 @@ function summarizeGenesFromContext(ctxWorld: typeof world): Record<string, numbe
     totals.scavenger += dna.scavengerAffinity ?? 0
     totals.metabolism += dna.metabolism ?? 0
     totals.awareness += dna.awareness ?? 0
+    totals.greed += dna.eatingGreed ?? 0.5
+    totals.maturityAge += dna.maturityAgeYears ?? 1
+
+    const birthTick = ctxWorld.birthTick.get(id) ?? ctxWorld.tick
+    const yearTicks = Math.max(1, ctxWorld.yearTicks ?? SIM_YEAR_TICKS)
+    const ageYears = Math.max(0, ctxWorld.tick - birthTick) / yearTicks
+    totals.ageYears += ageYears
+    totals.level += levelFromAgeYears(ageYears)
+
+    const mass = Body.mass[entity] || dna.bodyMass || 1
+    totals.mass += mass
+    const fatCap = Math.max(Energy.fatCapacity[entity] || 0, 1)
+    const fatRatio = (Energy.fatStore[entity] || 0) / fatCap
+    totals.fatRatio += Math.max(0, Math.min(1, fatRatio))
+
     if (dna.biome === 'land') {
       const legs = dna.bodyPlan?.limbs.filter((limb) => limb.kind === 'leg').reduce((sum, leg) => sum + leg.count, 0) ?? 0
       totals.stride += legs

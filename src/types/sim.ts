@@ -18,6 +18,9 @@ export interface DNA {
   // When `Energy.value / hungerLine` drops below this ratio, the agent begins actively searching for food.
   // Higher values => starts foraging earlier (more proactive); lower values => waits longer (more risk).
   forageStartRatio: number
+  // Desired "fullness" / appetite. Higher values => eats larger bites and keeps eating past satiation,
+  // turning more intake into stored fat.
+  eatingGreed: number
   fatCapacity: number
   fatBurnThreshold: number
   patrolThreshold: number
@@ -54,6 +57,9 @@ export interface DNA {
   fertility: number
   gestationCost: number
   moodStability: number
+  // Age in simulation years required before the agent can reproduce.
+  // Must be in [1, 20]; species-level variation is encoded genetically.
+  maturityAgeYears?: number
   preferredFood: Archetype[]
   stamina: number
   circadianBias: number
@@ -265,6 +271,22 @@ export interface CorpseState {
   maxDecay: number
 }
 
+export interface ManureState {
+  id: number
+  position: Vector2
+  radius: number
+  nutrients: number
+  decay: number
+  maxDecay: number
+}
+
+export interface FertilizerState {
+  id: number
+  position: Vector2
+  radius: number
+  nutrients: number
+}
+
 export interface WorldConfig {
   bounds: Vector2
   maxAgents: number
@@ -289,6 +311,8 @@ export interface SimulationSnapshot {
   agents: AgentState[]
   plants: PlantState[]
   corpses?: CorpseState[]
+  manures?: ManureState[]
+  fertilizers?: FertilizerState[]
   stats: SimulationStats
 }
 
@@ -308,6 +332,16 @@ export interface ControlState {
   flockingStrength: number
   curiosityBias: number
   aggressionBias: number
+  // Years required to reach genetic adult mass.
+  maturityYears: number
+  // Number of simulation ticks in one "year" (drives leveling).
+  yearTicks: number
+  // Scales how strongly body fat slows movement (0 = no penalty, 1 = default).
+  fatSpeedPenalty: number
+  // Global appetite scaling (multiplies the satiation line used by eating).
+  satiationMultiplier: number
+  // Energy cost (intake units) per 1.0 body-mass gain when converting surplus into lean mass.
+  massBuildCost: number
   debugOverlay: boolean
   lightweightVisuals: boolean
 }
@@ -316,7 +350,7 @@ export const DEFAULT_WORLD_CONFIG: WorldConfig = {
   bounds: { x: 17280, y: 17280 },
   // 3 archetypes (hunter/prey/scavenger) -> default to 50 each.
   maxAgents: 150,
-  maxPlants: 900,
+  maxPlants: 225,
   timeStepMs: 50,
   spatialHashCellSize: 64,
   rngSeed: Date.now(),
@@ -327,11 +361,16 @@ export const DEFAULT_CONTROLS: ControlState = {
   speed: 1,
   paused: false,
   maxAgents: 150,
-  maxPlants: 900,
+  maxPlants: 225,
   mutationRate: 0.01,
   flockingStrength: 1,
   curiosityBias: 0,
   aggressionBias: 0,
+  maturityYears: 6,
+  yearTicks: 2400,
+  fatSpeedPenalty: 1,
+  satiationMultiplier: 1,
+  massBuildCost: 35,
   debugOverlay: false,
   lightweightVisuals: false,
 }

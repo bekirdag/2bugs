@@ -73,6 +73,11 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
 
   ctx.agents.forEach((entity, id) => {
     const genome = ctx.genomes.get(id)
+    const birthTick = ctx.birthTick.get(id) ?? ctx.tick
+    const yearTicks = Math.max(1, ctx.yearTicks || 2400)
+    const ageYears = Math.max(0, ctx.tick - birthTick) / yearTicks
+    const maturityAgeYears = clamp(genome?.maturityAgeYears ?? 1, 1, 20)
+    const isMature = ageYears >= maturityAgeYears
     const escapeDuration = clamp(genome?.escapeDuration ?? 2, 0.5, 12)
     const lingerRate = clamp(genome?.lingerRate ?? 0.5, 0, 1)
     const attentionSpan = clamp(genome?.attentionSpan ?? 0.5, 0.1, 2)
@@ -92,6 +97,7 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
           0,
           1,
         )
+    const libidoForMood = isMature ? libidoRatio : 0
     const aggression = clamp((DNA.aggression[entity] ?? 0.4) + (controls.aggressionBias ?? 0), 0, 1)
     const curiosity = clamp((DNA.curiosity[entity] ?? 0.3) + (controls.curiosityBias ?? 0), 0.05, 1)
     const awareness = clamp((DNA.awareness[entity] ?? 0.5) + (controls.curiosityBias ?? 0) * 0.5, 0.05, 1)
@@ -380,7 +386,7 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
       forageStartRatio: clamp(genome?.forageStartRatio ?? 0.65, 0.25, 0.95),
       fatigue,
       sleepPressure,
-      libido: libidoRatio,
+      libido: libidoForMood,
       threatLevel: clamp(threatLevel, 0, 1),
       socialCohesion,
       curiosity,
@@ -471,11 +477,17 @@ function findMateTarget(
   entityId: number,
   neighbors: ReturnType<SimulationContext['agentIndex']['query']>,
 ): TargetRef | null {
+  const selfGenome = ctx.genomes.get(entityId)
+  const birthTick = ctx.birthTick.get(entityId) ?? ctx.tick
+  const yearTicks = Math.max(1, ctx.yearTicks || 2400)
+  const ageYears = Math.max(0, ctx.tick - birthTick) / yearTicks
+  const maturityAgeYears = clamp(selfGenome?.maturityAgeYears ?? 1, 1, 20)
+  if (ageYears < maturityAgeYears) return null
+
   const libido = Reproduction.libido[entity]
   const libidoThreshold = Reproduction.libidoThreshold[entity] || 0.6
   if (libido < libidoThreshold) return null
-  const genome = ctx.genomes.get(entityId)
-  const awarenessGene = genome?.awareness ?? DNA.awareness[entity] ?? 0.5
+  const awarenessGene = selfGenome?.awareness ?? DNA.awareness[entity] ?? 0.5
   const vision = DNA.visionRange[entity] * (1 + (clamp(DNA.awareness[entity] ?? 0.5, 0, 1) - 0.5) * 0.6)
   const fovRadians = computeVisionFovRadians(decodeArchetype(AgentMeta.archetype[entity]), awarenessGene)
   const cosHalfFov = Math.cos(fovRadians / 2)
@@ -488,6 +500,11 @@ function findMateTarget(
     if (bucket.id === entityId) return
     const mateEntity = ctx.agents.get(bucket.id)
     if (mateEntity === undefined) return
+    const mateGenome = ctx.genomes.get(bucket.id)
+    const mateBirthTick = ctx.birthTick.get(bucket.id) ?? ctx.tick
+    const mateAgeYears = Math.max(0, ctx.tick - mateBirthTick) / yearTicks
+    const mateMaturityAge = clamp(mateGenome?.maturityAgeYears ?? 1, 1, 20)
+    if (mateAgeYears < mateMaturityAge) return
     if (AgentMeta.archetype[mateEntity] !== AgentMeta.archetype[entity]) return
     if (ModeState.sexCooldown[mateEntity] > 0) return
     if (Reproduction.libido[mateEntity] < (Reproduction.libidoThreshold[mateEntity] || 0.6)) return

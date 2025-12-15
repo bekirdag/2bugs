@@ -1,7 +1,8 @@
-import { AgentMeta, DNA, Energy, Heading, ModeState, Position } from '../components'
+import { AgentMeta, DNA, Heading, ModeState, Position } from '../components'
 import type { SimulationContext } from '../types'
 
 import { clamp, lerpAngle } from '@/utils/math'
+import { applyFoodIntake } from '@/ecs/nutrition'
 import { ArchetypeCode } from '../components'
 
 const MODE = {
@@ -20,6 +21,7 @@ export function scavengerSystem(ctx: SimulationContext, dt: number) {
   ctx.agents.forEach((entity) => {
     const archetype = decodeArchetype(AgentMeta.archetype[entity])
     if (archetype !== 'scavenger') return
+    const id = AgentMeta.id[entity]
     const affinity = DNA.scavengerAffinity[entity] ?? 0
     if (affinity <= 0) return
     const me = { x: Position.x[entity], y: Position.y[entity] }
@@ -38,11 +40,7 @@ export function scavengerSystem(ctx: SimulationContext, dt: number) {
     const target = ctx.lootSites[bestIndex]
     if (bestDist < 16) {
       const intake = target.nutrients * clamp(affinity, 0.2, 1)
-      Energy.value[entity] += intake
-      Energy.fatStore[entity] = Math.min(
-        Energy.fatCapacity[entity],
-        Energy.fatStore[entity] + intake * 0.25,
-      )
+      applyFoodIntake(ctx, entity, id, intake)
       ctx.lootSites.splice(bestIndex, 1)
       ModeState.mode[entity] = MODE.Graze
     } else {

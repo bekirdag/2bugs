@@ -45,6 +45,10 @@ export const GENE_KEYS = [
   'preySizeTargetRatio',
   // NOTE: appended to preserve mutation-mask indices for existing genes.
   'forageStartRatio',
+  // NOTE: appended to preserve mutation-mask indices for existing genes.
+  'eatingGreed',
+  // NOTE: appended to preserve mutation-mask indices for existing genes.
+  'maturityAgeYears',
 ] as const
 
 export type GeneKey = typeof GENE_KEYS[number]
@@ -96,6 +100,10 @@ export function randomGeneValue(gene: GeneKey, rng: () => number): number {
       return 40 + rng() * 50 // 40..90
     case 'forageStartRatio':
       return 0.45 + rng() * 0.45 // 0.45..0.9
+    case 'eatingGreed':
+      return rng() // 0..1
+    case 'maturityAgeYears':
+      return 1 + rng() * 19 // 1..20
     case 'fatCapacity':
       return 120 + rng() * 1880 // 120..2000
     case 'fatBurnThreshold':

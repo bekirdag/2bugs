@@ -2,6 +2,8 @@ import { createWorldFromSnapshot, snapshotWorld, stepWorld } from '../src/ecs/wo
 import { DEFAULT_CONTROLS, DEFAULT_WORLD_CONFIG, type SimulationSnapshot } from '../src/types/sim'
 import { legacyPhpToSnapshot } from '../src/utils/legacyAdapter'
 import { serialize } from 'php-serialize'
+import { movementSystem } from '../src/ecs/systems/movementSystem'
+import { lifecycleSystem } from '../src/ecs/systems/lifecycleSystem'
 
 const baseSnapshot: SimulationSnapshot = legacyPhpToSnapshot(
   serialize(
@@ -55,3 +57,63 @@ if (prey.position.x === baseSnapshot.agents[1].position.x && prey.position.y ===
 }
 
 console.log('movementSystem smoke test passed')
+
+// Fat penalty sanity: same agent, higher fat => less movement distance (with deterministic RNG seed).
+{
+  const base = legacyPhpToSnapshot(
+    serialize(
+      {
+        prey1: {
+          type: 'prey',
+          x: 250,
+          y: 250,
+          speed: 60,
+          eyesightfactor: 60,
+          aggression: 20,
+          threshold: 60,
+          max_storage: 200,
+          store_using_threshold: 70,
+        },
+      },
+      'utf-8',
+    ),
+    { ...DEFAULT_WORLD_CONFIG, rngSeed: 123 },
+  )
+
+  const makeWorld = (fatStore: number) => {
+    const snapshot: SimulationSnapshot = {
+      ...base,
+      agents: base.agents.map((agent) => ({
+        ...agent,
+        energy: 9999,
+        fatStore,
+        heading: 0,
+        velocity: { x: 0, y: 0 },
+        mode: 'patrol',
+        target: null,
+      })),
+    }
+    const w = createWorldFromSnapshot(snapshot)
+    lifecycleSystem(w)
+    // Use a fixed dt and skip other systems to isolate speed.
+    movementSystem(w, DEFAULT_WORLD_CONFIG.timeStepMs / 1000, 1, 0, 1)
+    return snapshotWorld(w).agents[0]
+  }
+
+  const lean = makeWorld(0)
+  const fat = makeWorld(200)
+
+  const leanDx = lean.position.x - base.agents[0].position.x
+  const leanDy = lean.position.y - base.agents[0].position.y
+  const fatDx = fat.position.x - base.agents[0].position.x
+  const fatDy = fat.position.y - base.agents[0].position.y
+
+  const leanDist = Math.sqrt(leanDx * leanDx + leanDy * leanDy)
+  const fatDist = Math.sqrt(fatDx * fatDx + fatDy * fatDy)
+
+  if (!(fatDist < leanDist)) {
+    throw new Error(`Expected fat agent to move less (lean=${leanDist.toFixed(3)} fat=${fatDist.toFixed(3)})`)
+  }
+}
+
+console.log('fat speed penalty sanity test passed')

@@ -250,6 +250,15 @@ export function prepareDNA(dna: DNA): DNA {
     sizeFear: ensured.sizeFear ?? 0.5,
     dependency: ensured.dependency ?? 0.5,
     independenceAge: ensured.independenceAge ?? 20,
+    maturityAgeYears: clamp(
+      ensured.maturityAgeYears ??
+        // Larger species tend to mature later; hunters generally mature slightly later than prey.
+        (1 +
+          Math.pow(clamp(ensured.bodyMass ?? 1, 0.2, 80), 0.55) * 2.8 +
+          (ensured.archetype === 'hunter' ? 1.6 : ensured.archetype === 'scavenger' ? 1 : 0)),
+      1,
+      20,
+    ),
   }
   return applySenseOverrides(enforceDiet(normalized))
 }

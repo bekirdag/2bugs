@@ -10,9 +10,11 @@
     "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
     "test:legacy": "cross-env TSX_TSCONFIG_PATHS=true tsx --tsconfig tsconfig.app.json tests/legacyRoundtrip.test.ts",
     "test:movement": "cross-env TSX_TSCONFIG_PATHS=true tsx --tsconfig tsconfig.app.json tests/movementSystem.test.ts",
+    "test:interaction": "cross-env TSX_TSCONFIG_PATHS=true tsx --tsconfig tsconfig.app.json tests/interactionSystem.test.ts",
     "test:reproduction": "cross-env TSX_TSCONFIG_PATHS=true tsx --tsconfig tsconfig.app.json tests/reproductionSystem.test.ts",
+    "test:manure": "cross-env TSX_TSCONFIG_PATHS=true tsx --tsconfig tsconfig.app.json tests/manureSystem.test.ts",
     "test:persistence": "cross-env TSX_TSCONFIG_PATHS=true tsx --tsconfig tsconfig.app.json tests/persistence.test.ts",
-    "test": "npm run test:legacy && npm run test:movement && npm run test:reproduction && npm run test:persistence"
+    "test": "npm run test:legacy && npm run test:movement && npm run test:interaction && npm run test:reproduction && npm run test:manure && npm run test:persistence"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^6.2.1",

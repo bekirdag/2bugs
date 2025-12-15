@@ -11,31 +11,39 @@
   import { MODE_LEGEND, type SavedSnapshot } from '@/types/sim'
   import { telemetryStore } from '@/state/telemetryStore'
   import type { TelemetryData } from '@/state/telemetryStore'
-  import { biomeMutationTally, mutationEvents, type MutationEvent } from '@/state/mutationStore'
-  import type { GeneKey } from '@/ecs/genetics'
+	  import { biomeMutationTally, mutationEvents, type MutationEvent } from '@/state/mutationStore'
+	  import type { GeneKey } from '@/ecs/genetics'
+	  import { effectiveFatCapacity } from '@/ecs/lifecycle'
 
   const SIDEBAR_WIDTH = 340
   const LAYOUT_GAP = 1
 
   const formatNumber = (value: number, digits = 0) => value.toFixed(digits)
-  const geneLabels: Record<string, string> = {
-    speed: 'Speed',
-    vision: 'Vision',
-    aggression: 'Aggression',
-    stamina: 'Stamina',
-    scavenger: 'Scavenger',
-    metabolism: 'Metabolism',
-    awareness: 'Awareness',
-  }
-  const mutationGeneLabels: Record<GeneKey, string> = {
-    baseSpeed: 'Speed',
-    visionRange: 'Vision',
-    hungerThreshold: 'Hunger threshold',
-    forageStartRatio: 'Forage start ratio',
-    fatCapacity: 'Fat capacity',
-    fatBurnThreshold: 'Burn threshold',
-    patrolThreshold: 'Patrol threshold',
-    aggression: 'Aggression',
+	  const geneLabels: Record<string, string> = {
+	    speed: 'Speed',
+	    vision: 'Vision',
+	    aggression: 'Aggression',
+	    stamina: 'Stamina',
+	    scavenger: 'Scavenger',
+	    metabolism: 'Metabolism',
+	    awareness: 'Awareness',
+	    greed: 'Eating greed',
+	    maturityAge: 'Maturity age',
+	    ageYears: 'Age (years)',
+	    level: 'Level',
+	    mass: 'Mass',
+	    fatRatio: 'Fat ratio',
+	  }
+	  const mutationGeneLabels: Record<GeneKey, string> = {
+	    baseSpeed: 'Speed',
+	    visionRange: 'Vision',
+	    hungerThreshold: 'Hunger threshold',
+	    forageStartRatio: 'Forage start ratio',
+	    eatingGreed: 'Eating greed',
+	    fatCapacity: 'Fat capacity',
+	    fatBurnThreshold: 'Burn threshold',
+	    patrolThreshold: 'Patrol threshold',
+	    aggression: 'Aggression',
     bravery: 'Bravery',
     power: 'Power',
     defence: 'Defence',
@@ -63,9 +71,10 @@
     speciesFear: 'Other species fear',
     conspecificFear: 'Conspecific fear',
     dependency: 'Dependency',
-    independenceAge: 'Independence age',
-    sizeFear: 'Size fear',
-    stamina: 'Stamina',
+	    independenceAge: 'Independence age',
+	    maturityAgeYears: 'Maturity age (years)',
+	    sizeFear: 'Size fear',
+	    stamina: 'Stamina',
     circadianBias: 'Circadian bias',
     sleepEfficiency: 'Sleep efficiency',
     scavengerAffinity: 'Scavenger affinity',
@@ -77,7 +86,7 @@
   let saveName = ''
   let gridEnabled = false
   let selectedFamily = ''
-  let agentQuery = ''
+	  let agentQuery = ''
   let telemetry: TelemetryData | null = null
   let fps = 0
   let mutationFeed: MutationEvent[] = []
@@ -95,6 +104,8 @@
   $: saveStatus = $saveStatusStore
   $: hunters = snapshot ? snapshot.agents.filter((agent) => agent.dna.archetype === 'hunter').length : 0
   $: prey = snapshot ? snapshot.agents.filter((agent) => agent.dna.archetype === 'prey').length : 0
+  $: scavengers = snapshot ? snapshot.agents.filter((agent) => agent.dna.archetype === 'scavenger').length : 0
+  $: totalAgents = snapshot ? snapshot.agents.length : 0
   $: notableAgents = $notableAgentsStore
   $: mutationFeed = $mutationEvents
   $: mutationCounts = $biomeMutationTally
@@ -106,8 +117,13 @@ $: {
     fps = latestTelemetry.fps ?? fps
   }
 }
-$: pixiStage.setDebugOverlay?.(controls.debugOverlay)
-$: pixiStage.setLightweightVisuals?.(controls.lightweightVisuals)
+	  $: pixiStage.setDebugOverlay?.(controls.debugOverlay)
+	  $: pixiStage.setLightweightVisuals?.(controls.lightweightVisuals)
+	  $: parsedAgentQuery = agentQuery ? Number(agentQuery) : NaN
+	  $: queriedAgent =
+	    snapshot && Number.isFinite(parsedAgentQuery)
+	      ? snapshot.agents.find((agent) => agent.id === parsedAgentQuery)
+	      : null
   $: familyOptions =
     snapshot
       ? Object.values(
@@ -147,9 +163,42 @@ $: pixiStage.setLightweightVisuals?.(controls.lightweightVisuals)
     updateControls({ curiosityBias: Number((event.currentTarget as HTMLInputElement).value) })
   }
 
-  const handleAggressionBias = (event: Event) => {
-    updateControls({ aggressionBias: Number((event.currentTarget as HTMLInputElement).value) })
-  }
+	  const handleAggressionBias = (event: Event) => {
+	    updateControls({ aggressionBias: Number((event.currentTarget as HTMLInputElement).value) })
+	  }
+
+	  const handleMaturityYears = (event: Event) => {
+	    updateControls({ maturityYears: Number((event.currentTarget as HTMLInputElement).value) })
+	  }
+
+	  const handleYearTicks = (event: Event) => {
+	    updateControls({ yearTicks: Number((event.currentTarget as HTMLInputElement).value) })
+	  }
+
+	  const handleSatiationMultiplier = (event: Event) => {
+	    updateControls({ satiationMultiplier: Number((event.currentTarget as HTMLInputElement).value) })
+	  }
+
+	  const handleMassBuildCost = (event: Event) => {
+	    updateControls({ massBuildCost: Number((event.currentTarget as HTMLInputElement).value) })
+	  }
+
+	  const handleFatSpeedPenalty = (event: Event) => {
+	    updateControls({ fatSpeedPenalty: Number((event.currentTarget as HTMLInputElement).value) })
+	  }
+
+	  const resetTuning = () => {
+	    updateControls({
+	      flockingStrength: 1,
+	      curiosityBias: 0,
+	      aggressionBias: 0,
+	      maturityYears: 6,
+	      yearTicks: 2400,
+	      satiationMultiplier: 1,
+	      massBuildCost: 35,
+	      fatSpeedPenalty: 1,
+	    })
+	  }
 
   const handleDebugOverlayToggle = (event: Event) => {
     const enabled = (event.currentTarget as HTMLInputElement).checked
@@ -240,7 +289,7 @@ $: pixiStage.setLightweightVisuals?.(controls.lightweightVisuals)
     saveName = ''
     selectedFamily = ''
     agentQuery = ''
-    updateControls({ maxAgents: 1080, maxPlants: 900 })
+    updateControls({ maxAgents: 1080, maxPlants: 225 })
   }
 
   const handleZoomIn = () => {
@@ -287,6 +336,14 @@ $: pixiStage.setLightweightVisuals?.(controls.lightweightVisuals)
       <div>
         <span class="label">Plants</span>
         <span class="value">{stats.plants}</span>
+      </div>
+      <div>
+        <span class="label">Manure</span>
+        <span class="value">{stats.manures}</span>
+      </div>
+      <div>
+        <span class="label">Fertilizer</span>
+        <span class="value">{stats.fertilizers}</span>
       </div>
       <div>
         <span class="label">FPS</span>
@@ -348,10 +405,10 @@ $: pixiStage.setLightweightVisuals?.(controls.lightweightVisuals)
         </label>
       </div>
 
-      <div class="focus-row">
-        <label>
-          Jump to agent ID
-          <input
+	      <div class="focus-row">
+	        <label>
+	          Jump to agent ID
+	          <input
             type="number"
             min="1"
             placeholder="e.g. 123"
@@ -364,9 +421,9 @@ $: pixiStage.setLightweightVisuals?.(controls.lightweightVisuals)
                 }
               }
             }}
-          />
-        </label>
-        <button
+	          />
+	        </label>
+	        <button
           on:click={() => {
             const targetId = Number(agentQuery)
             if (!Number.isNaN(targetId)) {
@@ -374,10 +431,25 @@ $: pixiStage.setLightweightVisuals?.(controls.lightweightVisuals)
             }
           }}
           disabled={!agentQuery}
-        >
-          Jump
-        </button>
-      </div>
+	        >
+	          Jump
+	        </button>
+	      </div>
+	      {#if agentQuery}
+	        <div class="focus-row">
+	          {#if queriedAgent}
+	            {@const mass = queriedAgent.mass ?? queriedAgent.dna.bodyMass}
+	            {@const cap = effectiveFatCapacity(queriedAgent.dna, mass)}
+	            {@const fatPct = cap > 0 ? Math.round((queriedAgent.fatStore / cap) * 100) : 0}
+	            <div class="muted small">
+	              #{queriedAgent.id} • {queriedAgent.dna.archetype} • Age {queriedAgent.age.toFixed(1)}y (L{Math.floor(queriedAgent.age)})
+	              • Mass {mass.toFixed(2)} • Fat {fatPct}% • Greed {(queriedAgent.dna.eatingGreed ?? 0).toFixed(2)}
+	            </div>
+	          {:else}
+	            <div class="muted small">No agent found for #{agentQuery}</div>
+	          {/if}
+	        </div>
+	      {/if}
     </div>
     <div class="stat-grid">
       <div>
@@ -387,6 +459,14 @@ $: pixiStage.setLightweightVisuals?.(controls.lightweightVisuals)
       <div>
         <span class="label">Prey</span>
         <span class="value accent">{prey}</span>
+      </div>
+      <div>
+        <span class="label">Scavengers</span>
+        <span class="value accent">{scavengers}</span>
+      </div>
+      <div>
+        <span class="label">Total</span>
+        <span class="value">{totalAgents}</span>
       </div>
       <div>
         <span class="label">Avg Energy</span>
@@ -497,12 +577,15 @@ $: pixiStage.setLightweightVisuals?.(controls.lightweightVisuals)
       {/if}
     </section>
 
-    <section class="behavior-panel">
-      <h2>Behaviour tuning</h2>
-      <div class="control">
-        <label for="flocking-strength">Flocking strength ({controls.flockingStrength.toFixed(2)})</label>
-        <input
-          id="flocking-strength"
+	    <section class="behavior-panel">
+	      <h2>Behaviour tuning</h2>
+	      <div class="button-row">
+	        <button class="ghost" type="button" on:click={resetTuning}>Reset tuning</button>
+	      </div>
+	      <div class="control">
+	        <label for="flocking-strength">Flocking strength ({controls.flockingStrength.toFixed(2)})</label>
+	        <input
+	          id="flocking-strength"
           type="range"
           min="0"
           max="2"
@@ -523,18 +606,78 @@ $: pixiStage.setLightweightVisuals?.(controls.lightweightVisuals)
           on:input={handleCuriosityBias}
         />
       </div>
-      <div class="control">
-        <label for="aggression-bias">Aggression bias ({controls.aggressionBias.toFixed(2)})</label>
-        <input
-          id="aggression-bias"
-          type="range"
-          min="-0.3"
-          max="0.7"
-          step="0.05"
-          value={controls.aggressionBias}
-          on:input={handleAggressionBias}
-        />
-      </div>
+	      <div class="control">
+	        <label for="aggression-bias">Aggression bias ({controls.aggressionBias.toFixed(2)})</label>
+	        <input
+	          id="aggression-bias"
+	          type="range"
+	          min="-0.3"
+	          max="0.7"
+	          step="0.05"
+	          value={controls.aggressionBias}
+	          on:input={handleAggressionBias}
+	        />
+	      </div>
+	      <div class="control">
+	        <label for="maturity-years">Maturity years ({controls.maturityYears.toFixed(0)})</label>
+	        <input
+	          id="maturity-years"
+	          type="range"
+	          min="1"
+	          max="16"
+	          step="1"
+	          value={controls.maturityYears}
+	          on:input={handleMaturityYears}
+	        />
+	      </div>
+		      <div class="control">
+		        <label for="year-ticks">Year ticks ({controls.yearTicks.toFixed(0)})</label>
+		        <input
+		          id="year-ticks"
+		          type="range"
+		          min="600"
+		          max="9600"
+		          step="100"
+		          value={controls.yearTicks}
+		          on:input={handleYearTicks}
+		        />
+		      </div>
+		      <div class="control">
+		        <label for="satiation-multiplier">Satiation multiplier ({controls.satiationMultiplier.toFixed(2)})</label>
+		        <input
+		          id="satiation-multiplier"
+		          type="range"
+		          min="0.5"
+		          max="2.5"
+		          step="0.05"
+		          value={controls.satiationMultiplier}
+		          on:input={handleSatiationMultiplier}
+		        />
+		      </div>
+		      <div class="control">
+		        <label for="mass-build-cost">Mass build cost ({controls.massBuildCost.toFixed(0)})</label>
+		        <input
+		          id="mass-build-cost"
+		          type="range"
+		          min="10"
+		          max="120"
+		          step="1"
+		          value={controls.massBuildCost}
+		          on:input={handleMassBuildCost}
+		        />
+		      </div>
+		      <div class="control">
+		        <label for="fat-speed-penalty">Fat speed penalty ({controls.fatSpeedPenalty.toFixed(2)})</label>
+		        <input
+		          id="fat-speed-penalty"
+		          type="range"
+	          min="0"
+	          max="2"
+	          step="0.05"
+	          value={controls.fatSpeedPenalty}
+	          on:input={handleFatSpeedPenalty}
+	        />
+	      </div>
       <label class="debug-toggle">
         <input type="checkbox" checked={controls.debugOverlay} on:change={handleDebugOverlayToggle} />
         Show debug overlay

@@ -38,7 +38,7 @@ body {
 
 .viewport {
   position: relative;
-  background: radial-gradient(circle at top, rgba(37, 99, 235, 0.15), transparent 55%), #050913;
+  background: radial-gradient(circle at top, rgba(37, 99, 235, 0.15), transparent 55%), #d8c8a0;
   overflow: hidden;
 }
 

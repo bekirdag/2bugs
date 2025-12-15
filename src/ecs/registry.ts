@@ -5,6 +5,9 @@ import {
   AgentMeta,
   Body,
   Corpse,
+  Digestion,
+  Fertilizer,
+  Manure,
   DNA,
   Energy,
   GenomeFlags,
@@ -22,7 +25,7 @@ import {
 } from './components'
 import { decodeMoodKind, decodeMoodTier, encodeMoodKind, encodeMoodTier } from './mood/moodCatalog'
 
-import type { AgentState, CorpseState, PlantState, DNA as DNAState } from '@/types/sim'
+import type { AgentState, CorpseState, FertilizerState, ManureState, PlantState, DNA as DNAState } from '@/types/sim'
 import { clamp } from '@/utils/math'
 import { BODY_PLAN_VERSION, createBaseBodyPlan, cloneBodyPlan } from '@/ecs/bodyPlan'
 
@@ -39,6 +42,7 @@ export const COMPONENTS = {
   DNA,
   GenomeFlags,
   Energy,
+  Digestion,
   Mood,
   ModeState,
   Intent,
@@ -47,6 +51,8 @@ export const COMPONENTS = {
   PlantStats,
   Obstacle,
   Corpse,
+  Manure,
+  Fertilizer,
 } as const
 
 export function createRegistry(world: IWorld): EntityRegistry {
@@ -65,6 +71,7 @@ export function spawnAgentEntity(registry: EntityRegistry, state: AgentState): n
   addComponent(registry.world, DNA, entity)
   addComponent(registry.world, GenomeFlags, entity)
   addComponent(registry.world, Energy, entity)
+  addComponent(registry.world, Digestion, entity)
   addComponent(registry.world, Mood, entity)
   addComponent(registry.world, ModeState, entity)
   addComponent(registry.world, Intent, entity)
@@ -114,6 +121,8 @@ export function hydrateAgentEntity(entity: number, state: AgentState) {
   Energy.fatCapacity[entity] = state.dna.fatCapacity
   Energy.metabolism[entity] = state.dna.metabolism ?? 8
   Energy.sleepDebt[entity] = state.mood.stress ?? 0
+  Digestion.intakeSinceManure[entity] = 0
+  Digestion.recentIntake[entity] = 0
   Mood.stress[entity] = state.mood.stress
   Mood.focus[entity] = state.mood.focus
   Mood.social[entity] = state.mood.social
@@ -231,6 +240,36 @@ export function spawnCorpseEntity(
   return entity
 }
 
+export function spawnManureEntity(
+  registry: EntityRegistry,
+  manure: { position: { x: number; y: number }; radius: number; nutrients: number; decay: number; maxDecay: number },
+): number {
+  const entity = addEntity(registry.world)
+  addComponent(registry.world, Position, entity)
+  addComponent(registry.world, Manure, entity)
+  Position.x[entity] = manure.position.x
+  Position.y[entity] = manure.position.y
+  Manure.radius[entity] = manure.radius
+  Manure.nutrients[entity] = manure.nutrients
+  Manure.decay[entity] = manure.decay
+  Manure.maxDecay[entity] = manure.maxDecay
+  return entity
+}
+
+export function spawnFertilizerEntity(
+  registry: EntityRegistry,
+  fertilizer: { position: { x: number; y: number }; radius: number; nutrients: number },
+): number {
+  const entity = addEntity(registry.world)
+  addComponent(registry.world, Position, entity)
+  addComponent(registry.world, Fertilizer, entity)
+  Position.x[entity] = fertilizer.position.x
+  Position.y[entity] = fertilizer.position.y
+  Fertilizer.radius[entity] = fertilizer.radius
+  Fertilizer.nutrients[entity] = fertilizer.nutrients
+  return entity
+}
+
 export function serializePlantEntity(entity: number, id: number): PlantState {
   return {
     id,
@@ -260,6 +299,26 @@ export function serializeCorpseEntity(entity: number, id: number): CorpseState {
     nutrients: Corpse.nutrients[entity],
     decay: Corpse.decay[entity],
     maxDecay: Corpse.maxDecay[entity],
+  }
+}
+
+export function serializeManureEntity(entity: number, id: number): ManureState {
+  return {
+    id,
+    position: { x: Position.x[entity], y: Position.y[entity] },
+    radius: Manure.radius[entity],
+    nutrients: Manure.nutrients[entity],
+    decay: Manure.decay[entity],
+    maxDecay: Manure.maxDecay[entity],
+  }
+}
+
+export function serializeFertilizerEntity(entity: number, id: number): FertilizerState {
+  return {
+    id,
+    position: { x: Position.x[entity], y: Position.y[entity] },
+    radius: Fertilizer.radius[entity],
+    nutrients: Fertilizer.nutrients[entity],
   }
 }
 
@@ -369,6 +428,7 @@ function composeSnapshotDNA(entity: number): DNAState {
     visionRange: vision,
     hungerThreshold: metabolism * 8,
     forageStartRatio,
+    eatingGreed: clamp(0.4 + curiosity * 0.8, 0, 1),
     fatCapacity,
     fatBurnThreshold: fatCapacity * 0.5,
     patrolThreshold: curiosity * 100,

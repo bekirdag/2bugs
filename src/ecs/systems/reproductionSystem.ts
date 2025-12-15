@@ -67,6 +67,14 @@ export function reproductionSystem(
     // explicitly targeting a mate (set by the perception/mood system).
     if (ModeState.mode[entity] !== MODE.Mate) return
     if (ModeState.targetType[entity] !== 1 || !ModeState.targetId[entity]) return
+
+    const selfGenome = ctx.genomes.get(id)
+    const birthTick = ctx.birthTick.get(id) ?? ctx.tick
+    const yearTicks = Math.max(1, ctx.yearTicks || 2400)
+    const ageYears = Math.max(0, ctx.tick - birthTick) / yearTicks
+    const maturityAgeYears = clamp(selfGenome?.maturityAgeYears ?? 1, 1, 20)
+    if (ageYears < maturityAgeYears) return
+
     const libidoThreshold = Reproduction.libidoThreshold[entity] || 0.6
     if (Reproduction.libido[entity] < libidoThreshold) return
     if (Energy.value[entity] < Energy.metabolism[entity] * 1.1) return
@@ -76,6 +84,11 @@ export function reproductionSystem(
     if (paired.has(targetMateId)) return
     const mateEntity = ctx.agents.get(targetMateId)
     if (mateEntity === undefined) return
+    const mateGenome = ctx.genomes.get(targetMateId)
+    const mateBirthTick = ctx.birthTick.get(targetMateId) ?? ctx.tick
+    const mateAgeYears = Math.max(0, ctx.tick - mateBirthTick) / yearTicks
+    const mateMaturityAgeYears = clamp(mateGenome?.maturityAgeYears ?? 1, 1, 20)
+    if (mateAgeYears < mateMaturityAgeYears) return
     if (ModeState.mode[mateEntity] !== MODE.Mate) return
     if (ModeState.targetType[mateEntity] !== 1 || ModeState.targetId[mateEntity] !== id) return
     if (AgentMeta.archetype[mateEntity] !== AgentMeta.archetype[entity]) return
@@ -101,10 +114,11 @@ export function reproductionSystem(
     Energy.value[mateEntity] -= sexCostB
 
     const fertility = ((DNAComp.fertility[entity] ?? 0.3) + (DNAComp.fertility[mateEntity] ?? 0.3)) / 2
-    if (ctx.agents.size < ctx.config.maxAgents && ctx.rng() < fertility) {
+    if (ctx.rng() < fertility) {
       const parentA = extractDNA(ctx, entity)
       const parentB = extractDNA(ctx, mateEntity)
       const { dna: childDNA, mutationMask } = crossoverDNA(ctx, parentA, parentB, controls.mutationRate)
+      childDNA.maturityAgeYears = clamp(childDNA.maturityAgeYears ?? 1, 1, 20)
       const motherEntityId = ctx.rng() < 0.5 ? entity : mateEntity
       const motherId = AgentMeta.id[motherEntityId]
       const gestation = 6 + (childDNA.gestationCost ?? 5) * 0.6
@@ -123,18 +137,20 @@ function crossoverDNA(
   globalMutationRate: number,
 ): { dna: DNA; mutationMask: number } {
   const dominance = DEFAULT_DOMINANCE
-  const child: DNA = {
-    archetype: a.archetype,
-    biome: ctx.rng() < 0.5 ? a.biome ?? 'land' : b.biome ?? 'land',
-    familyColor: ctx.rng() < 0.5 ? a.familyColor : b.familyColor,
-    baseSpeed: 0,
-    visionRange: 0,
-    hungerThreshold: 0,
-    forageStartRatio: 0,
-    fatCapacity: 0,
-    fatBurnThreshold: 0,
-    patrolThreshold: 0,
-    aggression: 0,
+	  const child: DNA = {
+	    archetype: a.archetype,
+	    biome: ctx.rng() < 0.5 ? a.biome ?? 'land' : b.biome ?? 'land',
+	    familyColor: ctx.rng() < 0.5 ? a.familyColor : b.familyColor,
+	    baseSpeed: 0,
+	    visionRange: 0,
+	    hungerThreshold: 0,
+	    forageStartRatio: 0,
+	    eatingGreed: 0,
+	    maturityAgeYears: 0,
+	    fatCapacity: 0,
+	    fatBurnThreshold: 0,
+	    patrolThreshold: 0,
+	    aggression: 0,
     bravery: 0,
     power: 0,
     defence: 0,
@@ -177,7 +193,9 @@ function crossoverDNA(
 
   let mutationMask = 0
   NUMERIC_GENES.forEach((gene) => {
-    child[gene] = applyGeneDominance(dominance, gene, a[gene], b[gene], ctx.rng)
+    const aValue = a[gene] ?? randomGeneValue(gene, ctx.rng)
+    const bValue = b[gene] ?? randomGeneValue(gene, ctx.rng)
+    child[gene] = applyGeneDominance(dominance, gene, aValue, bValue, ctx.rng)
   })
 
   // Combine global UI control with the heritable mutation-rate gene.
@@ -227,18 +245,19 @@ function extractDNA(ctx: SimulationContext, entity: number): DNA {
       bodyPlan: cloneBodyPlan(stored.bodyPlan),
     }
   }
-  return prepareDNA({
-    archetype: decodeArchetype(AgentMeta.archetype[entity]),
-    biome: 'land',
-    familyColor: '#ffffff',
-    baseSpeed: DNAComp.baseSpeed[entity],
-    visionRange: DNAComp.visionRange[entity],
-    hungerThreshold: Energy.metabolism[entity] * 8,
-    forageStartRatio: 0.65,
-    fatCapacity: Energy.fatCapacity[entity],
-    fatBurnThreshold: Energy.fatCapacity[entity] * 0.5,
-    patrolThreshold: DNAComp.curiosity[entity] * 100,
-    aggression: DNAComp.aggression[entity],
+	  return prepareDNA({
+	    archetype: decodeArchetype(AgentMeta.archetype[entity]),
+	    biome: 'land',
+	    familyColor: '#ffffff',
+	    baseSpeed: DNAComp.baseSpeed[entity],
+	    visionRange: DNAComp.visionRange[entity],
+	    hungerThreshold: Energy.metabolism[entity] * 8,
+	    forageStartRatio: 0.65,
+	    eatingGreed: 0.5,
+	    fatCapacity: Energy.fatCapacity[entity],
+	    fatBurnThreshold: Energy.fatCapacity[entity] * 0.5,
+	    patrolThreshold: DNAComp.curiosity[entity] * 100,
+	    aggression: DNAComp.aggression[entity],
     bravery: 0.5,
     power: 80,
     defence: 50,

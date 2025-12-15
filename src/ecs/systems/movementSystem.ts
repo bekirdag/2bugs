@@ -22,6 +22,7 @@ export function movementSystem(
   dt: number,
   speedMultiplier: number,
   curiosityBias = 0,
+  fatSpeedPenalty = 1,
 ) {
   const { bounds } = ctx.config
   const step = dt * speedMultiplier
@@ -129,7 +130,10 @@ export function movementSystem(
               : mode === MODE.Fight
                 ? 0.4
                 : 1
-    const fatPenalty = 1 / (1 + Energy.fatStore[entity] / Math.max(Energy.fatCapacity[entity], 1))
+    const fatCapacity = Math.max(Energy.fatCapacity[entity], 1)
+    const fatRatio = clamp(Energy.fatStore[entity] / fatCapacity, 0, 1)
+    // Fatter animals move slower. Nonlinear curve makes mild fat less punishing, while very fat becomes meaningfully slower.
+    const fatPenalty = clamp(1 - clamp(fatSpeedPenalty, 0, 2) * 0.75 * Math.pow(fatRatio, 0.85), 0.2, 1)
     let locomotionBonus = 1
     if (biome === 'land' && landStats) {
       locomotionBonus = clamp(0.6 + landStats.strideLength, 0.5, 1.6)

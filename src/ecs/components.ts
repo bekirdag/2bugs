@@ -36,6 +36,14 @@ export const Energy = defineComponent({
   sleepDebt: Types.f32,
 })
 
+// Tracks food intake that will later be converted into manure.
+export const Digestion = defineComponent({
+  // Total intake accumulated since last manure drop.
+  intakeSinceManure: Types.f32,
+  // Recently eaten intake (used to size droppings by "how much it ate"); should be decayed by a system.
+  recentIntake: Types.f32,
+})
+
 export const DNA = defineComponent({
   baseSpeed: Types.f32,
   visionRange: Types.f32,
@@ -124,6 +132,21 @@ export const Corpse = defineComponent({
   nutrients: Types.f32,
   decay: Types.f32,
   maxDecay: Types.f32,
+  radius: Types.f32,
+})
+
+// Non-edible droppings that decay quickly into fertilizer.
+export const Manure = defineComponent({
+  nutrients: Types.f32,
+  decay: Types.f32,
+  maxDecay: Types.f32,
+  radius: Types.f32,
+})
+
+// Persistent soil nutrients deposited by dissolved corpses/manure.
+// Does not decay on its own; plants consume it to grow.
+export const Fertilizer = defineComponent({
+  nutrients: Types.f32,
   radius: Types.f32,
 })
 

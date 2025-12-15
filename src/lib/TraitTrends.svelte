@@ -5,7 +5,16 @@
   const width = 140
   const height = 48
 
-  type MetricKey = 'avgSpeed' | 'avgVision' | 'avgAggression' | 'avgMetabolism' | 'avgBodyMass' | 'avgAwareness'
+  type MetricKey =
+    | 'avgSpeed'
+    | 'avgVision'
+    | 'avgAggression'
+    | 'avgMetabolism'
+    | 'avgBodyMass'
+    | 'avgAwareness'
+    | 'avgEatingGreed'
+    | 'avgFatRatio'
+    | 'avgAgeYears'
 
   const metrics: { key: MetricKey; label: string; color: string; digits?: number }[] = [
     { key: 'avgSpeed', label: 'Speed', color: '#f472b6', digits: 0 },
@@ -14,6 +23,9 @@
     { key: 'avgMetabolism', label: 'Metabolism', color: '#facc15', digits: 2 },
     { key: 'avgBodyMass', label: 'Body Mass', color: '#34d399', digits: 2 },
     { key: 'avgAwareness', label: 'Awareness', color: '#a78bfa', digits: 2 },
+    { key: 'avgEatingGreed', label: 'Eating greed', color: '#fb923c', digits: 2 },
+    { key: 'avgFatRatio', label: 'Fat ratio', color: '#f97316', digits: 2 },
+    { key: 'avgAgeYears', label: 'Age (years)', color: '#60a5fa', digits: 1 },
   ]
 
   $: history = $traitHistory
