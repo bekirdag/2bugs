@@ -87,6 +87,14 @@ export const ModeState = defineComponent({
   gestationTimer: Types.f32,
 })
 
+// High-level decision output ("brain intent") that gets committed into `ModeState` for actuation.
+// Keeping intent separate avoids multiple systems "fighting" over `ModeState.mode/target`.
+export const Intent = defineComponent({
+  mode: Types.ui8,
+  targetType: Types.ui8,
+  targetId: Types.ui32,
+})
+
 export const Perception = defineComponent({
   predatorCount: Types.ui8,
   nearbyAllies: Types.ui8,

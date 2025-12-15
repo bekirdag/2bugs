@@ -7,6 +7,7 @@ import {
   Energy,
   GenomeFlags,
   Heading,
+  Intent,
   ModeState,
   Mood,
   Perception,
@@ -36,6 +37,7 @@ export const COMPONENTS = {
   Energy,
   Mood,
   ModeState,
+  Intent,
   Perception,
   Reproduction,
   PlantStats,
@@ -58,6 +60,7 @@ export function spawnAgentEntity(registry: EntityRegistry, state: AgentState): n
   addComponent(registry.world, Energy, entity)
   addComponent(registry.world, Mood, entity)
   addComponent(registry.world, ModeState, entity)
+  addComponent(registry.world, Intent, entity)
   addComponent(registry.world, Perception, entity)
   addComponent(registry.world, Reproduction, entity)
 
@@ -116,6 +119,9 @@ export function hydrateAgentEntity(entity: number, state: AgentState) {
   ModeState.dangerTimer[entity] = state.escapeCooldown
   ModeState.sexCooldown[entity] = state.sexCooldown
   ModeState.gestationTimer[entity] = state.gestationTimer
+  Intent.mode[entity] = ModeState.mode[entity]
+  Intent.targetType[entity] = ModeState.targetType[entity]
+  Intent.targetId[entity] = ModeState.targetId[entity]
   Reproduction.libido[entity] = state.libido
   Reproduction.libidoThreshold[entity] = state.dna.libidoThreshold ?? 0.6
   Reproduction.mateId[entity] = 0

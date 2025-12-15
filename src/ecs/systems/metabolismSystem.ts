@@ -61,7 +61,20 @@ export function metabolismSystem(
     const isPregnant = ctx.pregnancies.has(id)
     const pregnancyCost = isPregnant ? (DNA.gestationCost[entity] ?? 5) * dt * 0.3 : 0
 
-    Energy.value[entity] -= burnRate + senseDrain + locomotionDrain + runDrain + massPenalty + pregnancyCost
+    const totalDrain = burnRate + senseDrain + locomotionDrain + runDrain + massPenalty + pregnancyCost
+    Energy.value[entity] -= totalDrain
+
+    // Fat-to-energy buffering while sleeping: only burn fat above the DNA threshold.
+    // This wires `dna.fatBurnThreshold` (legacy: `store_using_threshold`) into the energy loop.
+    if (mode === MODE.Sleep && genome) {
+      const threshold = clamp(genome.fatBurnThreshold ?? Energy.fatCapacity[entity] * 0.5, 0, Energy.fatCapacity[entity])
+      const availableFat = Math.max(0, Energy.fatStore[entity] - threshold)
+      if (availableFat > 0) {
+        const cover = Math.min(totalDrain, availableFat)
+        Energy.fatStore[entity] -= cover
+        Energy.value[entity] += cover
+      }
+    }
     if (Energy.value[entity] < 0 && Energy.fatStore[entity] > 0) {
       const repay = Math.min(Energy.fatStore[entity], Math.abs(Energy.value[entity]))
       Energy.fatStore[entity] -= repay
@@ -73,19 +86,17 @@ export function metabolismSystem(
       return
     }
 
-    const hunger = Energy.value[entity] < Energy.metabolism[entity] * 8 + Energy.sleepDebt[entity]
-    const wantsRest = Energy.value[entity] > Energy.metabolism[entity] * 12
+    const hungerThreshold = genome?.hungerThreshold ?? Energy.metabolism[entity] * 8
+    const hunger = Energy.value[entity] < hungerThreshold + Energy.sleepDebt[entity]
+    const wantsRest = Energy.value[entity] > hungerThreshold * 1.5
 
     if (hunger && !behaviorLocked) {
-      ModeState.mode[entity] = MODE.Hunt
       Mood.focus[entity] = clamp(Mood.focus[entity] + 0.4 * dt, 0, 1)
       Mood.stress[entity] = clamp(Mood.stress[entity] + 0.35 * dt)
-    } else if (mode === MODE.Hunt && wantsRest && !behaviorLocked) {
-      ModeState.mode[entity] = MODE.Sleep
+    } else if (wantsRest && !behaviorLocked) {
       Mood.stress[entity] = clamp(Mood.stress[entity] - 0.5 * dt)
       Mood.focus[entity] = clamp(Mood.focus[entity] - 0.2 * dt)
-    } else if (!hunger && mode !== MODE.Flee && !behaviorLocked) {
-      ModeState.mode[entity] = MODE.Patrol
+    } else if (!behaviorLocked) {
       Mood.focus[entity] = clamp(Mood.focus[entity] - 0.1 * dt)
     }
 
@@ -93,19 +104,13 @@ export function metabolismSystem(
     ModeState.gestationTimer[entity] = Math.max(0, ModeState.gestationTimer[entity] - dt)
     if (ModeState.dangerTimer[entity] > 0) {
       ModeState.dangerTimer[entity] = Math.max(0, ModeState.dangerTimer[entity] - dt)
-      if (ModeState.dangerTimer[entity] <= 0 && ModeState.mode[entity] === MODE.Flee) {
-        ModeState.mode[entity] = MODE.Patrol
-      }
     }
     if (ModeState.sexCooldown[entity] > 0) {
       ModeState.sexCooldown[entity] = Math.max(0, ModeState.sexCooldown[entity] - dt)
     }
 
-    Reproduction.libido[entity] = clamp(
-      Reproduction.libido[entity] + DNA.fertility[entity] * 0.25 * dt,
-      0,
-      1,
-    )
+    const libidoGainRate = clamp(genome?.libidoGainRate ?? (DNA.fertility[entity] ?? 0.3) * 0.25, 0, 1)
+    Reproduction.libido[entity] = clamp(Reproduction.libido[entity] + libidoGainRate * dt, 0, 1)
 
     if (mode === MODE.Sleep) {
       const recovery = (DNA.sleepEfficiency[entity] ?? 0.8) * dt
@@ -115,9 +120,6 @@ export function metabolismSystem(
       const debtGain = dt / Math.max(DNA.stamina[entity] ?? 1, 0.5)
       Energy.sleepDebt[entity] = Math.min(5, Energy.sleepDebt[entity] + debtGain)
       Mood.fatigue[entity] = clamp(Mood.fatigue[entity] + debtGain * 0.2, 0, 1)
-      if (Energy.sleepDebt[entity] > 2.5) {
-        ModeState.mode[entity] = MODE.Sleep
-      }
     }
   })
 

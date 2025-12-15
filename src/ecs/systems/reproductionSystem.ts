@@ -56,11 +56,6 @@ export function reproductionSystem(
 
   const paired = new Set<number>()
   ctx.agents.forEach((entity, id) => {
-    Reproduction.libido[entity] = clamp(
-      Reproduction.libido[entity] + (DNAComp.fertility[entity] || 0.2) * dt,
-      0,
-      1,
-    )
     if (ModeState.sexCooldown[entity] > 0) {
       ModeState.sexCooldown[entity] = Math.max(0, ModeState.sexCooldown[entity] - dt)
       return
@@ -68,61 +63,53 @@ export function reproductionSystem(
     if (ctx.pregnancies.has(id)) {
       return
     }
+    // Mating is intent-driven: only try to reproduce if the agent is currently in mate mode and
+    // explicitly targeting a mate (set by the perception/mood system).
+    if (ModeState.mode[entity] !== MODE.Mate) return
+    if (ModeState.targetType[entity] !== 1 || !ModeState.targetId[entity]) return
     const libidoThreshold = Reproduction.libidoThreshold[entity] || 0.6
     if (Reproduction.libido[entity] < libidoThreshold) return
     if (Energy.value[entity] < Energy.metabolism[entity] * 1.1) return
     if (paired.has(id)) return
 
-    const neighbors = ctx.agentIndex.query({ x: Position.x[entity], y: Position.y[entity] }, 80)
-    for (const bucket of neighbors) {
-      if (bucket.id === id) continue
-      if (paired.has(bucket.id)) continue
-      const mateEntity = ctx.agents.get(bucket.id)
-      if (mateEntity === undefined) continue
-      if (AgentMeta.archetype[mateEntity] !== AgentMeta.archetype[entity]) continue
-      if (ctx.pregnancies.has(bucket.id)) continue
-      if (Reproduction.libido[mateEntity] < (Reproduction.libidoThreshold[mateEntity] || 0.6)) continue
-      if (Reproduction.libido[entity] < (Reproduction.libidoThreshold[entity] || 0.6)) continue
-      if (ModeState.sexCooldown[mateEntity] > 0) continue
-      if (Energy.value[mateEntity] < Energy.metabolism[mateEntity] * 1.1) continue
-      const dx = Position.x[entity] - Position.x[mateEntity]
-      const dy = Position.y[entity] - Position.y[mateEntity]
-      if (Math.sqrt(dx * dx + dy * dy) > 28) continue
-      paired.add(id)
-      paired.add(bucket.id)
+    const targetMateId = ModeState.targetId[entity]
+    if (paired.has(targetMateId)) return
+    const mateEntity = ctx.agents.get(targetMateId)
+    if (mateEntity === undefined) return
+    if (ModeState.mode[mateEntity] !== MODE.Mate) return
+    if (ModeState.targetType[mateEntity] !== 1 || ModeState.targetId[mateEntity] !== id) return
+    if (AgentMeta.archetype[mateEntity] !== AgentMeta.archetype[entity]) return
+    if (ctx.pregnancies.has(targetMateId)) return
+    if (ModeState.sexCooldown[mateEntity] > 0) return
+    if (Reproduction.libido[mateEntity] < (Reproduction.libidoThreshold[mateEntity] || 0.6)) return
+    if (Energy.value[mateEntity] < Energy.metabolism[mateEntity] * 1.1) return
 
-      ModeState.mode[entity] = MODE.Mate
-      ModeState.mode[mateEntity] = MODE.Mate
-      Reproduction.libido[entity] = 0
-      Reproduction.libido[mateEntity] = 0
-      ModeState.sexCooldown[entity] = 5
-      ModeState.sexCooldown[mateEntity] = 5
-      const sexCostA = (DNAComp.gestationCost[entity] ?? 8) * 1.5
-      const sexCostB = (DNAComp.gestationCost[mateEntity] ?? 8) * 1.5
-      Energy.value[entity] -= sexCostA
-      Energy.value[mateEntity] -= sexCostB
+    const dx = Position.x[entity] - Position.x[mateEntity]
+    const dy = Position.y[entity] - Position.y[mateEntity]
+    if (Math.sqrt(dx * dx + dy * dy) > 28) return
 
-      const fertility =
-        ((DNAComp.fertility[entity] ?? 0.3) + (DNAComp.fertility[mateEntity] ?? 0.3)) / 2
-      if (ctx.agents.size < ctx.config.maxAgents && ctx.rng() < fertility) {
-        const parentA = extractDNA(ctx, entity)
-        const parentB = extractDNA(ctx, mateEntity)
-        const { dna: childDNA, mutationMask } = crossoverDNA(
-          ctx,
-          parentA,
-          parentB,
-          controls.mutationRate,
-        )
-        const motherEntityId = ctx.rng() < 0.5 ? entity : mateEntity
-        const motherId = AgentMeta.id[motherEntityId]
-        const gestation = 6 + (childDNA.gestationCost ?? 5) * 0.6
-        ModeState.gestationTimer[motherEntityId] = gestation
-        ctx.pregnancies.set(motherId, { dna: childDNA, mutationMask, parentId: motherId })
-      }
+    paired.add(id)
+    paired.add(targetMateId)
 
-      ModeState.mode[entity] = MODE.Sleep
-      ModeState.mode[mateEntity] = MODE.Sleep
-      break
+    Reproduction.libido[entity] = 0
+    Reproduction.libido[mateEntity] = 0
+    ModeState.sexCooldown[entity] = 5
+    ModeState.sexCooldown[mateEntity] = 5
+    const sexCostA = (DNAComp.gestationCost[entity] ?? 8) * 1.5
+    const sexCostB = (DNAComp.gestationCost[mateEntity] ?? 8) * 1.5
+    Energy.value[entity] -= sexCostA
+    Energy.value[mateEntity] -= sexCostB
+
+    const fertility = ((DNAComp.fertility[entity] ?? 0.3) + (DNAComp.fertility[mateEntity] ?? 0.3)) / 2
+    if (ctx.agents.size < ctx.config.maxAgents && ctx.rng() < fertility) {
+      const parentA = extractDNA(ctx, entity)
+      const parentB = extractDNA(ctx, mateEntity)
+      const { dna: childDNA, mutationMask } = crossoverDNA(ctx, parentA, parentB, controls.mutationRate)
+      const motherEntityId = ctx.rng() < 0.5 ? entity : mateEntity
+      const motherId = AgentMeta.id[motherEntityId]
+      const gestation = 6 + (childDNA.gestationCost ?? 5) * 0.6
+      ModeState.gestationTimer[motherEntityId] = gestation
+      ctx.pregnancies.set(motherId, { dna: childDNA, mutationMask, parentId: motherId })
     }
   })
 }
@@ -133,7 +120,7 @@ function crossoverDNA(
   ctx: SimulationContext,
   a: DNA,
   b: DNA,
-  mutationRate: number,
+  globalMutationRate: number,
 ): { dna: DNA; mutationMask: number } {
   const dominance = DEFAULT_DOMINANCE
   const child: DNA = {
@@ -191,9 +178,20 @@ function crossoverDNA(
     child[gene] = applyGeneDominance(dominance, gene, a[gene], b[gene], ctx.rng)
   })
 
+  // Combine global UI control with the heritable mutation-rate gene.
+  // `globalMutationRate` is the user slider (typical 0.001..0.1), while `a/b.mutationRate` is a per-lineage modifier.
+  // We treat `0.01` as the “baseline” genetic rate and scale around it.
+  const BASE_MUTATION_GENE = 0.01
+  const geneticRate = clamp(((a.mutationRate ?? BASE_MUTATION_GENE) + (b.mutationRate ?? BASE_MUTATION_GENE)) / 2, 0, 1)
+  const effectiveMutationRate = clamp(
+    globalMutationRate * (geneticRate / BASE_MUTATION_GENE),
+    0,
+    1,
+  )
+
   const biomeMutationBias = child.biome === 'water' ? 0.3 : child.biome === 'air' ? 0.35 : 0.2
   const mutationRoll = ctx.rng()
-  if (mutationRoll < mutationRate) {
+  if (mutationRoll < effectiveMutationRate) {
     const mutateBodyPlan = ctx.rng() < biomeMutationBias
     const targetGene = NUMERIC_GENES[Math.floor(ctx.rng() * NUMERIC_GENES.length)]
     const randomize = ctx.rng() < 0.4

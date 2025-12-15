@@ -1,14 +1,9 @@
-import { DNA, Energy, ModeState, Mood } from '../components'
+import { DNA, Energy, Mood } from '../components'
 import type { SimulationContext } from '../types'
 
 import { clamp } from '@/utils/math'
 
 const DAY_LENGTH_TICKS = 1800
-
-const MODE = {
-  Sleep: 1,
-  Patrol: 6,
-}
 
 export function circadianSystem(ctx: SimulationContext, dt: number) {
   const phase = ((ctx.tick % DAY_LENGTH_TICKS) / DAY_LENGTH_TICKS) * Math.PI * 2
@@ -21,10 +16,11 @@ export function circadianSystem(ctx: SimulationContext, dt: number) {
     const stressDelta = (0.5 - preference) * 0.25 * dt
     Mood.stress[entity] = clamp(Mood.stress[entity] + stressDelta, 0, 1)
 
-    if (restWindow && ModeState.mode[entity] !== MODE.Sleep) {
-      ModeState.mode[entity] = MODE.Sleep
-    } else if (!restWindow && ModeState.mode[entity] === MODE.Sleep && Energy.sleepDebt[entity] < 0.2) {
-      ModeState.mode[entity] = MODE.Patrol
+    // Circadian rhythm should bias sleep pressure, not hard-overwrite the agent's chosen mode.
+    // Push sleep debt up during the rest window so the mood machine is more likely to choose sleep.
+    if (restWindow) {
+      const push = clamp((0.35 - preference) / 0.35, 0, 1)
+      Energy.sleepDebt[entity] = Math.min(5, Energy.sleepDebt[entity] + push * dt * 0.6)
     }
   })
 }

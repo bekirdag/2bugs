@@ -22,11 +22,7 @@ export function interactionSystem(ctx: SimulationContext, hooks: InteractionHook
     if (!targetType || !targetId) return
 
     const targetPos = resolveTargetPosition(ctx, targetType, targetId)
-    if (!targetPos) {
-      ModeState.targetType[entity] = 0
-      ModeState.targetId[entity] = 0
-      return
-    }
+    if (!targetPos) return
 
     const dx = Position.x[entity] - targetPos.x
     const dy = Position.y[entity] - targetPos.y
@@ -50,11 +46,7 @@ function handleDuel(
   aggressionBias: number,
 ) {
   const defenderEntity = ctx.agents.get(defenderId)
-  if (defenderEntity === undefined) {
-    ModeState.targetType[attackerEntity] = 0
-    ModeState.targetId[attackerEntity] = 0
-    return
-  }
+  if (defenderEntity === undefined) return
 
   const attackerGenome = ctx.genomes.get(attackerId)
   const defenderGenome = ctx.genomes.get(defenderId)
@@ -84,7 +76,6 @@ function handleDuel(
 
   if (Energy.value[loser] <= 0 && Energy.fatStore[loser] <= 0) {
     // Winner gains spoils if carnivore
-    const winnerId = AgentMeta.id[winner]
     const loserId = AgentMeta.id[loser]
     const energyGain = Math.max(Energy.value[loser] * 1.2, 40)
     const fatGain = Math.max(Energy.fatStore[loser] * 0.8, 20)
@@ -97,13 +88,6 @@ function handleDuel(
     Energy.value[winner] += energyGain
     Energy.fatStore[winner] = Math.min(Energy.fatCapacity[winner], Energy.fatStore[winner] + fatGain)
     hooks.removeAgent(loserId)
-    ModeState.mode[winner] = MODE.Graze
-    ModeState.targetType[winner] = 0
-    ModeState.targetId[winner] = 0
-  } else {
-    ModeState.mode[winner] = MODE.Graze
-    ModeState.targetType[winner] = 0
-    ModeState.targetId[winner] = 0
   }
 }
 
@@ -143,20 +127,13 @@ function resolveStrike(
 
 function handleGrazing(ctx: SimulationContext, preyEntity: number, plantId: number, hooks: InteractionHooks) {
   const plantEntity = ctx.plants.get(plantId)
-  if (plantEntity === undefined) {
-    ModeState.targetType[preyEntity] = 0
-    ModeState.targetId[preyEntity] = 0
-    return
-  }
+  if (plantEntity === undefined) return
 
   const bite = 0.5
   PlantStats.biomass[plantEntity] -= bite
   PlantStats.moisture[plantEntity] = Math.max(0, PlantStats.moisture[plantEntity] - bite * 0.35)
   const energyGain = bite * PlantStats.nutrientDensity[plantEntity] * 120
   Energy.value[preyEntity] += energyGain
-  ModeState.mode[preyEntity] = MODE.Graze
-  ModeState.targetType[preyEntity] = 0
-  ModeState.targetId[preyEntity] = 0
   Energy.fatStore[preyEntity] = Math.min(
     Energy.fatCapacity[preyEntity],
     Energy.fatStore[preyEntity] + energyGain * 0.4,

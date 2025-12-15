@@ -10,6 +10,7 @@ export interface MoodMachineInput {
   socialCohesion: number
   curiosity: number
   aggression: number
+  fightPersistence: number
   fear: number
   cowardice: number
   cohesion: number
@@ -51,7 +52,9 @@ export function resolveMood(input: MoodMachineInput): MoodDecision {
   )
   const survivalThreshold = 0.45 - (1 - stability) * 0.12
   if (survivalPressure > survivalThreshold) {
-    const braveEnough = (input.aggression ?? 0.3) > (fearBias + 0.15) && (input.threatLevel ?? 0) > 0.45
+    const persistence = clamp(input.fightPersistence ?? 0.5, 0, 1)
+    const fightDrive = clamp((input.aggression ?? 0.3) * 0.65 + persistence * 0.35, 0, 1)
+    const braveEnough = fightDrive > fearBias + 0.15 && (input.threatLevel ?? 0) > 0.45
     if (braveEnough && input.predatorTarget) {
       return {
         mood: 'panic',

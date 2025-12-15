@@ -54,13 +54,17 @@ export function movementSystem(
     const swimStats = featureFlags.aquaticBodyPlan ? profile?.water : undefined
     const flightStats = featureFlags.aerialBodyPlan ? profile?.air : undefined
 
-    let turnFactor = DNA.curiosity[entity] ?? 0.3
+    // `turnRate` is a heritable DNA field stored in the genome map (not the bitecs DNA component).
+    // We treat it as a base turn multiplier and modulate it with biome/body-plan agility when enabled.
+    const baseTurnRate = clamp(genome?.turnRate ?? 1.5, 0.2, 5)
+    let turnFactor = baseTurnRate
     if (biome === 'land' && landStats) {
-      turnFactor = clamp(landStats.agility * 1.2, 0.15, 1.5)
+      turnFactor = baseTurnRate * clamp(landStats.agility * 1.2, 0.15, 1.5)
     } else if (biome === 'water' && swimStats) {
-      turnFactor = clamp(swimStats.turnRate, 0.2, 1.3)
+      turnFactor = baseTurnRate * clamp(swimStats.turnRate, 0.2, 1.3)
     } else if (biome === 'air' && flightStats) {
-      turnFactor = clamp(0.4 + (flightStats.lift + flightStats.glide) * 0.3, 0.3, 1.6)
+      turnFactor =
+        baseTurnRate * clamp(0.4 + (flightStats.lift + flightStats.glide) * 0.3, 0.3, 1.6)
     }
 
     // Juvenile bonding: follow parent if within dependency window
@@ -73,7 +77,6 @@ export function movementSystem(
       const parentEntity = ctx.agents.get(parentId)
       if (parentEntity !== undefined) {
         targetPosition = { x: Position.x[parentEntity], y: Position.y[parentEntity] }
-        ModeState.mode[entity] = MODE.Patrol
       }
     }
 
@@ -85,9 +88,9 @@ export function movementSystem(
       const turnAmount = clamp((Heading.turnRate[entity] || turnFactor) * step, 0, 1)
       Heading.angle[entity] = lerpAngle(Heading.angle[entity], desiredHeading, turnAmount)
     } else if (!resting) {
-      const curiosity = clamp((turnFactor ?? DNA.curiosity[entity] ?? 0.2) + curiosityBias, 0.05, 1)
+      const curiosity = clamp((DNA.curiosity[entity] ?? 0.2) + curiosityBias, 0.05, 1)
       const jitter = (ctx.rng() - 0.5) * curiosity * 2
-      Heading.angle[entity] += jitter * step
+      Heading.angle[entity] += jitter * step * clamp(turnFactor, 0.3, 3)
     }
 
     const stamina = DNA.stamina[entity] ?? 1
@@ -149,19 +152,11 @@ function resolveTargetPosition(ctx: SimulationContext, entity: number) {
   if (!targetType || !targetId) return null
   if (targetType === 1) {
     const targetEntity = ctx.agents.get(targetId)
-    if (targetEntity === undefined) {
-      ModeState.targetType[entity] = 0
-      ModeState.targetId[entity] = 0
-      return null
-    }
+    if (targetEntity === undefined) return null
     return { x: Position.x[targetEntity], y: Position.y[targetEntity] }
   } else {
     const targetEntity = ctx.plants.get(targetId)
-    if (targetEntity === undefined) {
-      ModeState.targetType[entity] = 0
-      ModeState.targetId[entity] = 0
-      return null
-    }
+    if (targetEntity === undefined) return null
     return { x: Position.x[targetEntity], y: Position.y[targetEntity] }
   }
 }

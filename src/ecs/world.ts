@@ -4,6 +4,7 @@ import { DNA, Energy, Position } from './components'
 import { createRegistry, serializeAgentEntity, serializePlantEntity, spawnAgentEntity, spawnPlantEntity } from './registry'
 import type { SimulationContext } from './types'
 import { perceptionSystem } from './systems/perceptionSystem'
+import { commitIntentSystem } from './systems/commitIntentSystem'
 import { movementSystem } from './systems/movementSystem'
 import { interactionSystem } from './systems/interactionSystem'
 import { metabolismSystem } from './systems/metabolismSystem'
@@ -11,8 +12,6 @@ import { plantGrowthSystem } from './systems/plantSystem'
 import { reproductionSystem } from './systems/reproductionSystem'
 import { flockingSystem } from './systems/flockingSystem'
 import { circadianSystem } from './systems/circadianSystem'
-import { scavengerSystem } from './systems/scavengerSystem'
-import { grazingSystem } from './systems/grazingSystem'
 
 import type {
   AgentState,
@@ -143,11 +142,7 @@ function spawnInitialPopulation(ctx: SimulationContext) {
   const totalAgents = ctx.config.maxAgents
   const archetypeBiomeSlots: { archetype: Archetype; biome: Biome }[] = [
     { archetype: 'hunter', biome: 'land' },
-    { archetype: 'hunter', biome: 'water' },
-    { archetype: 'hunter', biome: 'air' },
     { archetype: 'prey', biome: 'land' },
-    { archetype: 'prey', biome: 'water' },
-    { archetype: 'prey', biome: 'air' },
   ]
   const clusterCount = archetypeBiomeSlots.length
   const perCluster = Math.floor(totalAgents / clusterCount)
@@ -190,8 +185,8 @@ export function stepWorld(ctx: SimulationContext, dtMs: number, controls: Contro
   }
 
   measure('perception', () => perceptionSystem(ctx, controls))
+  measure('intent', () => commitIntentSystem(ctx))
   measure('flocking', () => flockingSystem(ctx, dt, controls.flockingStrength ?? 1))
-  measure('grazing', () => grazingSystem(ctx, controls.curiosityBias ?? 0))
   measure('circadian', () => circadianSystem(ctx, dt))
   measure('movement', () => movementSystem(ctx, dt, controls.speed, controls.curiosityBias ?? 0))
   measure('interaction', () =>
@@ -204,7 +199,6 @@ export function stepWorld(ctx: SimulationContext, dtMs: number, controls: Contro
       controls.aggressionBias ?? 0,
     ),
   )
-  measure('scavenger', () => scavengerSystem(ctx, dt))
   const expired = measure('metabolism', () => metabolismSystem(ctx, dt, controls))
   measure('expire', () => expireAgents(ctx, expired))
   measure('plantGrowth', () => plantGrowthSystem(ctx, dt))
@@ -337,7 +331,7 @@ function expireAgents(ctx: SimulationContext, ids: number[]) {
 function enforcePopulationTargets(ctx: SimulationContext, controls: ControlState, dtMs: number) {
   let availableSlots = Math.max(0, controls.maxAgents - ctx.agents.size)
   const archetypes: Archetype[] = ['hunter', 'prey']
-  const biomes: Biome[] = ['land', 'air', 'water']
+  const biomes: Biome[] = ['land']
 
   const counts = new Map<string, number>()
   biomes.forEach((biome) =>
@@ -443,7 +437,7 @@ function buildDNA(ctx: SimulationContext, archetype: Archetype, biome: Biome = '
     attentionSpan: randRange(ctx.rng, 0.35, 0.9),
     libidoThreshold: randRange(ctx.rng, 0.4, 0.8),
     libidoGainRate: randRange(ctx.rng, 0.01, 0.05),
-    mutationRate: ctx.config.timeStepMs / 1000 / 100,
+    mutationRate: randRange(ctx.rng, 0.005, 0.03),
     bodyMass: randRange(ctx.rng, archetype === 'hunter' ? 1.2 : 0.8, archetype === 'hunter' ? 20 : 14),
     metabolism: randRange(ctx.rng, 6, 12),
     turnRate: randRange(ctx.rng, 1, 3),

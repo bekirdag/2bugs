@@ -1,4 +1,4 @@
-import { ModeState } from '../components'
+import { Intent } from '../components'
 
 import type { BehaviourIntent } from './moodMachine'
 import type { AgentMode } from '@/types/sim'
@@ -22,12 +22,12 @@ const TARGET_CODE = {
 } as const
 
 export function applyBehaviourIntent(entity: number, intent: BehaviourIntent) {
-  ModeState.mode[entity] = MODE_CODE[intent.mode] ?? MODE_CODE.patrol
+  Intent.mode[entity] = MODE_CODE[intent.mode] ?? MODE_CODE.patrol
   if (intent.target) {
-    ModeState.targetType[entity] = TARGET_CODE[intent.target.kind]
-    ModeState.targetId[entity] = intent.target.id
+    Intent.targetType[entity] = TARGET_CODE[intent.target.kind]
+    Intent.targetId[entity] = intent.target.id
   } else {
-    ModeState.targetType[entity] = 0
-    ModeState.targetId[entity] = 0
+    Intent.targetType[entity] = 0
+    Intent.targetId[entity] = 0
   }
 }

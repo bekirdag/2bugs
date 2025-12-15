@@ -2,6 +2,7 @@ import {
   AgentMeta,
   DNA,
   Energy,
+  Intent,
   ModeState,
   Mood,
   Position,
@@ -15,36 +16,40 @@ import type { SimulationContext } from '../types'
 import type { ControlState, TargetRef } from '@/types/sim'
 import { clamp, distanceSquared } from '@/utils/math'
 
-const ModeCode = {
-  Mate: 5,
-} as const
-
 export function perceptionSystem(ctx: SimulationContext, controls: ControlState) {
   const tick = ctx.tick
   // Run perception every other tick to reduce load
   if (tick % 2 === 1) return
 
   ctx.agents.forEach((entity, id) => {
-    const currentMode = ModeState.mode[entity]
     const genome = ctx.genomes.get(id)
+    const escapeDuration = clamp(genome?.escapeDuration ?? 2, 0.5, 12)
+    const lingerRate = clamp(genome?.lingerRate ?? 0.5, 0, 1)
+    const attentionSpan = clamp(genome?.attentionSpan ?? 0.5, 0.1, 2)
 
     const stress = Mood.stress[entity]
     const focus = Mood.focus[entity]
-    const hungerLine = Energy.metabolism[entity] * 12 + Energy.sleepDebt[entity]
+    const hungerThreshold = (genome?.hungerThreshold ?? Energy.metabolism[entity] * 8) * 1.5
+    const hungerLine = hungerThreshold + Energy.sleepDebt[entity]
     const hungerRatio = clamp(Energy.value[entity] / Math.max(hungerLine, 1), 0, 1)
     const fatigue = clamp(Mood.fatigue[entity], 0, 1)
     const sleepPressure = clamp(Energy.sleepDebt[entity] / 5, 0, 1)
-    const libidoRatio = clamp(
-      Reproduction.libido[entity] / Math.max(Reproduction.libidoThreshold[entity] || 0.6, 0.1),
-      0,
-      1,
-    )
+    const inReproCooldown = ModeState.sexCooldown[entity] > 0 || ctx.pregnancies.has(id)
+    const libidoRatio = inReproCooldown
+      ? 0
+      : clamp(
+          Reproduction.libido[entity] / Math.max(Reproduction.libidoThreshold[entity] || 0.6, 0.1),
+          0,
+          1,
+        )
     const aggression = clamp((DNA.aggression[entity] ?? 0.4) + (controls.aggressionBias ?? 0), 0, 1)
     const curiosity = clamp((DNA.curiosity[entity] ?? 0.3) + (controls.curiosityBias ?? 0), 0.05, 1)
     const awareness = clamp((DNA.awareness[entity] ?? 0.5) + (controls.curiosityBias ?? 0) * 0.5, 0.05, 1)
     const archetype = decodeArchetype(AgentMeta.archetype[entity])
-    const dietAgents = archetypeDiet(archetype)
-    const eatsPlants = dietAgents.includes('plant')
+    const preferredFood =
+      genome?.preferredFood && genome.preferredFood.length ? genome.preferredFood : archetypeDiet(archetype)
+    const eatsPlants = preferredFood.includes('plant')
+    const dietAgents = preferredFood.filter((type) => type !== 'plant')
     const speciesFear = clamp(DNA.speciesFear[entity] ?? DNA.fear[entity] ?? 0.3, 0, 1)
     const conspecificFear = clamp(DNA.conspecificFear[entity] ?? 0.25, 0, 1)
     const sizeFear = clamp(DNA.sizeFear[entity] ?? 0.5, 0, 1)
@@ -112,9 +117,10 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
         predatorTarget = { kind: 'agent', id: AgentMeta.id[otherEntity] }
         // Immediate reflex: if threat is pronounced, trigger flee right now
         if (threatScore > escapeTendency && dist <= dangerRadius) {
-          ModeState.mode[entity] = 4 // Flee
-          ModeState.targetType[entity] = 1
-          ModeState.targetId[entity] = predatorTarget.id
+          Intent.mode[entity] = 4 // Flee
+          Intent.targetType[entity] = 1
+          Intent.targetId[entity] = predatorTarget.id
+          ModeState.dangerTimer[entity] = Math.max(ModeState.dangerTimer[entity], escapeDuration)
           ModeState.dangerTimer[entity] = Math.max(
             ModeState.dangerTimer[entity],
             dangerRadius / Math.max(DNA.baseSpeed[entity], 1),
@@ -136,6 +142,28 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
       return
     }
 
+    // Target stickiness: `lingerRate` makes agents less likely to thrash targets when weights are close.
+    const stickiness = (1 + lingerRate * 0.75) * (1 + attentionSpan * 0.4)
+    if (ModeState.targetType[entity] === 1) {
+      const currentTargetId = ModeState.targetId[entity]
+      const currentTargetEntity = ctx.agents.get(currentTargetId)
+      if (currentTargetEntity !== undefined) {
+        const currentType = decodeArchetype(AgentMeta.archetype[currentTargetEntity])
+        if (dietAgents.includes(currentType)) {
+          const currentPos = { x: Position.x[currentTargetEntity], y: Position.y[currentTargetEntity] }
+          const dist = Math.sqrt(distanceSquared(mePos, currentPos))
+          if (dist <= vision) {
+            const currentWeight =
+              (1 / Math.max(dist, 1)) * (0.6 + focus * 0.4) * (1 + aggression * 0.4) * awareness
+            if (currentWeight * stickiness >= bestPreyWeight) {
+              bestPreyTarget = { kind: 'agent', id: currentTargetId }
+              bestPreyWeight = currentWeight
+            }
+          }
+        }
+      }
+    }
+
     // Primitive flight reflex: override any ongoing behaviour if predator is close enough
     const fear = DNA.fear[entity] ?? 0.3
     const fleeTrigger = dangerRadius * clamp((awarenessGene + fear + courageGene) / 3, 0.1, 2)
@@ -144,9 +172,9 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
     }
 
     let bestPlantTarget: TargetRef | null = null
+    let bestPlantWeight = -Infinity
     if (eatsPlants && (hungerRatio < 0.9 || hungerRatio < 1 && bestPreyTarget === null)) {
       const plantCandidates = ctx.plantIndex.query(mePos, vision)
-      let bestPlantWeight = -Infinity
       plantCandidates.forEach((bucket) => {
         const plantEntity = ctx.plants.get(bucket.id)
         if (plantEntity === undefined) return
@@ -161,6 +189,24 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
       })
     }
 
+    if (ModeState.targetType[entity] === 2) {
+      const currentPlantId = ModeState.targetId[entity]
+      const currentPlantEntity = ctx.plants.get(currentPlantId)
+      if (currentPlantEntity !== undefined) {
+        const dist = Math.sqrt(
+          distanceSquared(mePos, { x: Position.x[currentPlantEntity], y: Position.y[currentPlantEntity] }),
+        )
+        if (dist <= vision) {
+          const currentWeight =
+            (Energy.fatCapacity[entity] * 0.2 + 1) * (1 / Math.max(dist, 1)) * (hungerRatio < 0.55 ? 1.2 : 1)
+          if (currentWeight * stickiness >= bestPlantWeight) {
+            bestPlantTarget = { kind: 'plant', id: currentPlantId }
+            bestPlantWeight = currentWeight
+          }
+        }
+      }
+    }
+
     const socialCohesion = allyCount === 0 ? 0 : clamp(allyProximity / allyCount, 0, 1)
     const moodInput: MoodMachineInput = {
       hungerRatio,
@@ -171,6 +217,7 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
       socialCohesion,
       curiosity,
       aggression,
+      fightPersistence: genome?.fightPersistence ?? clamp(aggression, 0.05, 1),
       fear: DNA.fear[entity] ?? 0.3,
       cowardice: DNA.cowardice[entity] ?? DNA.fear[entity] ?? 0.3,
       cohesion: DNA.socialDrive[entity] ?? 0.2,
@@ -188,7 +235,7 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
     if (predatorTarget && closestPredatorDist <= fleeTrigger) {
       decision.behaviour.mode = 'flee'
       decision.behaviour.target = predatorTarget
-      ModeState.dangerTimer[entity] = Math.max(ModeState.dangerTimer[entity], 1.25)
+      ModeState.dangerTimer[entity] = Math.max(ModeState.dangerTimer[entity], Math.max(1.25, escapeDuration))
     }
 
     // Align behaviour with explicit search targets by mood
@@ -207,7 +254,11 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
     applyBehaviourIntent(entity, decision.behaviour)
 
     if (decision.tier === 'survival') {
-      ModeState.dangerTimer[entity] = Math.max(ModeState.dangerTimer[entity], decision.intensity + 0.5)
+      const survivalHold = escapeDuration * clamp(0.5 + decision.intensity, 0.5, 2)
+      ModeState.dangerTimer[entity] = Math.max(
+        ModeState.dangerTimer[entity],
+        Math.max(decision.intensity + 0.5, survivalHold),
+      )
     } else if (ModeState.dangerTimer[entity] > 0) {
       ModeState.dangerTimer[entity] = Math.max(0, ModeState.dangerTimer[entity] - 0.05)
     }
@@ -243,7 +294,8 @@ function findMateTarget(
   const libido = Reproduction.libido[entity]
   const libidoThreshold = Reproduction.libidoThreshold[entity] || 0.6
   if (libido < libidoThreshold) return null
-  let best: { id: number; dist: number } | null = null
+  let bestId: number | null = null
+  let bestDist = Infinity
   neighbors.forEach((bucket) => {
     if (bucket.id === entityId) return
     const mateEntity = ctx.agents.get(bucket.id)
@@ -254,11 +306,12 @@ function findMateTarget(
     const dx = Position.x[entity] - Position.x[mateEntity]
     const dy = Position.y[entity] - Position.y[mateEntity]
     const dist = Math.sqrt(dx * dx + dy * dy)
-    if (!best || dist < best.dist) {
-      best = { id: bucket.id, dist }
+    if (dist < bestDist) {
+      bestDist = dist
+      bestId = bucket.id
     }
   })
-  return best ? { kind: 'agent', id: best.id } : null
+  return bestId === null ? null : { kind: 'agent', id: bestId }
 }
 
 function preferForageTarget(prey: TargetRef | null | undefined, plant: TargetRef | null | undefined) {

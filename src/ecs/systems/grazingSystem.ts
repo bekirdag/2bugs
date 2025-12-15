@@ -14,13 +14,16 @@ export function grazingSystem(ctx: SimulationContext, curiosityBias = 0) {
   ctx.agents.forEach((entity, id) => {
     const mode = ModeState.mode[entity]
     if (mode === MODE.Sleep || mode === MODE.Flee) return
+    const genome = ctx.genomes.get(id)
     const archetype = AgentMeta.archetype[entity]
     const curiosity = (DNA.curiosity[entity] ?? 0.3) + curiosityBias
     const eatsPlants =
-      archetype === ArchetypeCode.Prey || (DNA.scavengerAffinity[entity] ?? 0) > 0.25
+      genome?.preferredFood?.includes('plant') ??
+      (archetype === ArchetypeCode.Prey || (DNA.scavengerAffinity[entity] ?? 0) > 0.25)
     if (!eatsPlants) return
 
-    const hungerLine = Energy.metabolism[entity] * (1 + curiosity * 0.4)
+    const hungerThreshold = genome?.hungerThreshold ?? Energy.metabolism[entity] * 8
+    const hungerLine = hungerThreshold * (1 + curiosity * 0.4)
     const wantsForage =
       Energy.value[entity] < hungerLine || ModeState.mode[entity] === MODE.Graze || curiosity > 0.55
     if (!wantsForage) return

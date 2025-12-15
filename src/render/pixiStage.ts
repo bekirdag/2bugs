@@ -89,8 +89,7 @@ export class PixiStage {
   #camera = new Container()
   #gridLayer = new Graphics()
   #miniMapOverlay = new Graphics()
-  #plantLayer = new Container()
-  #agentLayer = new Container()
+  #entityLayer = new Container()
 
   // Data & Pools
   #agentSprites = new Map<number, AgentSpriteData>()
@@ -152,7 +151,9 @@ export class PixiStage {
 
     // Setup hierarchy
     this.#camera.interactiveChildren = false
-    this.#camera.addChild(this.#gridLayer, this.#plantLayer, this.#agentLayer, this.#miniMapOverlay)
+    // All entities share a single layer/canvas container; zIndex controls draw ordering.
+    this.#entityLayer.sortableChildren = true
+    this.#camera.addChild(this.#gridLayer, this.#entityLayer, this.#miniMapOverlay)
     this.#app.stage.addChild(this.#camera)
 
     // Layers config
@@ -463,7 +464,8 @@ export class PixiStage {
           entry = this.#createAgentSprite(archetype)
         }
         this.#agentSprites.set(agent.id, entry)
-        this.#agentLayer.addChild(entry.container)
+        entry.container.zIndex = 10
+        this.#entityLayer.addChild(entry.container)
       } else if (entry.archetype !== archetype) {
         this.#configureAgentSprite(entry, archetype)
       }
@@ -603,7 +605,8 @@ export class PixiStage {
           sprite.anchor.set(0.5, 1)
           sprite.alpha = 0.8
           sprite.eventMode = 'none'
-          this.#plantLayer.addChild(sprite)
+          sprite.zIndex = 0
+          this.#entityLayer.addChild(sprite)
           entry = {
             sprite,
             swayPhase: Math.random() * Math.PI * 2,

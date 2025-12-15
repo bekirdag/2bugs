@@ -3,6 +3,8 @@ import { DEFAULT_CONTROLS, DEFAULT_WORLD_CONFIG } from '../src/types/sim'
 import { legacyPhpToSnapshot } from '../src/utils/legacyAdapter'
 import { serialize } from 'php-serialize'
 
+const config = { ...DEFAULT_WORLD_CONFIG, rngSeed: 1 }
+
 const snapshot = legacyPhpToSnapshot(
   serialize(
     {
@@ -11,12 +13,14 @@ const snapshot = legacyPhpToSnapshot(
     },
     'utf-8',
   ),
-  DEFAULT_WORLD_CONFIG,
+  config,
 )
 const world = createWorldFromSnapshot(snapshot)
-const controls = { ...DEFAULT_CONTROLS, maxAgents: 12, mutationRate: 1 }
+// Keep `maxAgents` at the current population size so `enforcePopulationTargets` does not spawn
+// missing archetypes and mask reproduction/mutation behavior.
+const controls = { ...DEFAULT_CONTROLS, maxAgents: 2, mutationRate: 1, speed: 0 }
 
-for (let i = 0; i < 40; i++) {
+for (let i = 0; i < 650; i++) {
   stepWorld(world, DEFAULT_WORLD_CONFIG.timeStepMs, controls)
 }
 
