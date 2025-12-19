@@ -74,6 +74,7 @@ export const DNA = defineComponent({
   camo: Types.f32,
   awareness: Types.f32,
   moodStability: Types.f32,
+  cannibalism: Types.f32,
   senseUpkeep: Types.f32,
 })
 
@@ -138,6 +139,9 @@ export const Corpse = defineComponent({
   decay: Types.f32,
   maxDecay: Types.f32,
   radius: Types.f32,
+  stage: Types.ui8,
+  freshTime: Types.f32,
+  archetype: Types.ui8,
 })
 
 // Non-edible droppings that decay quickly into fertilizer.

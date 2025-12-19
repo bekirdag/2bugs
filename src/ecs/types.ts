@@ -9,6 +9,11 @@ export interface SimulationMetrics {
   births: number
   deaths: number
   mutations: number
+  eatCounts: {
+    hunter: number
+    prey: number
+    scavenger: number
+  }
 }
 
 export interface LootSite {

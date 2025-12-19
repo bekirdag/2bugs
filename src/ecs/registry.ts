@@ -26,6 +26,7 @@ import {
   LocomotionState,
 } from './components'
 import { decodeMoodKind, decodeMoodTier, encodeMoodKind, encodeMoodTier } from './mood/moodCatalog'
+import { decodeCorpseStage, encodeCorpseStage, CORPSE_STAGE } from './corpseStages'
 
 import type { AgentState, CorpseState, FertilizerState, ManureState, PlantState, DNA as DNAState } from '@/types/sim'
 import { clamp } from '@/utils/math'
@@ -122,6 +123,7 @@ export function hydrateAgentEntity(entity: number, state: AgentState) {
   DNA.camo[entity] = state.dna.camo ?? 0.3
   DNA.awareness[entity] = state.dna.awareness ?? 0.5
   DNA.moodStability[entity] = state.dna.moodStability ?? 0.5
+  DNA.cannibalism[entity] = state.dna.cannibalism ?? 0
   DNA.senseUpkeep[entity] = state.dna.senseUpkeep ?? 0
   Energy.value[entity] = state.energy
   Energy.fatStore[entity] = state.fatStore
@@ -240,7 +242,16 @@ export function spawnRockEntity(
 
 export function spawnCorpseEntity(
   registry: EntityRegistry,
-  corpse: { position: { x: number; y: number }; radius: number; nutrients: number; decay: number; maxDecay: number },
+  corpse: {
+    position: { x: number; y: number }
+    radius: number
+    nutrients: number
+    decay: number
+    maxDecay: number
+    stage?: CorpseState['stage']
+    archetype?: CorpseState['archetype']
+    freshTime?: number
+  },
 ): number {
   const entity = addEntity(registry.world)
   addComponent(registry.world, Position, entity)
@@ -251,6 +262,12 @@ export function spawnCorpseEntity(
   Corpse.nutrients[entity] = corpse.nutrients
   Corpse.decay[entity] = corpse.decay
   Corpse.maxDecay[entity] = corpse.maxDecay
+  const stage = encodeCorpseStage(corpse.stage)
+  Corpse.stage[entity] = stage
+  const fallbackFresh =
+    stage === CORPSE_STAGE.Fresh ? Math.min(corpse.maxDecay * 0.25, 180) : 0
+  Corpse.freshTime[entity] = corpse.freshTime ?? fallbackFresh
+  Corpse.archetype[entity] = corpse.archetype ? encodeArchetype(corpse.archetype) : 0
   return entity
 }
 
@@ -311,6 +328,9 @@ export function serializeCorpseEntity(entity: number, id: number): CorpseState {
     position: { x: Position.x[entity], y: Position.y[entity] },
     radius: Corpse.radius[entity],
     nutrients: Corpse.nutrients[entity],
+    archetype: Corpse.archetype[entity] ? decodeArchetype(Corpse.archetype[entity]) : undefined,
+    stage: decodeCorpseStage(Corpse.stage[entity]),
+    freshTime: Corpse.freshTime[entity],
     decay: Corpse.decay[entity],
     maxDecay: Corpse.maxDecay[entity],
   }
@@ -361,6 +381,19 @@ function decodeArchetype(code: number): AgentState['dna']['archetype'] {
       return 'scavenger'
     default:
       return 'prey'
+  }
+}
+
+function encodeArchetype(archetype: AgentState['dna']['archetype']): number {
+  switch (archetype) {
+    case 'hunter':
+      return ArchetypeCode.Hunter
+    case 'prey':
+      return ArchetypeCode.Prey
+    case 'scavenger':
+      return ArchetypeCode.Scavenger
+    default:
+      return ArchetypeCode.Prey
   }
 }
 
@@ -426,6 +459,7 @@ function composeSnapshotDNA(entity: number): DNAState {
   const fatCapacity = Energy.fatCapacity[entity] || 100
   const metabolism = Energy.metabolism[entity] || 8
   const vision = DNA.visionRange[entity] || 200
+  const cannibalism = DNA.cannibalism[entity] ?? 0
   const forageStartRatio = DNA.curiosity[entity] ? clamp(0.55 + (DNA.curiosity[entity] ?? 0.3) * 0.35, 0.35, 0.95) : 0.65
   const cowardice = DNA.cowardice[entity] ?? DNA.fear[entity] ?? 0.3
   const speciesFear = DNA.speciesFear[entity] ?? fear
@@ -477,9 +511,12 @@ function composeSnapshotDNA(entity: number): DNAState {
     fertility: DNA.fertility[entity] ?? fertility,
     gestationCost: clamp(metabolism * 1.5, 5, 40),
     moodStability: DNA.moodStability[entity] ?? clamp(1 - (Mood.stress[entity] ?? 0.5), 0.1, 1),
+    cannibalism,
     preferredFood:
       archetype === 'hunter'
-        ? ['prey']
+        ? cannibalism >= 0.5
+          ? ['prey', 'scavenger', 'hunter']
+          : ['prey', 'scavenger']
         : archetype === 'scavenger'
           ? []
         : DNA.scavengerAffinity[entity] > 0.4

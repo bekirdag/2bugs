@@ -2,6 +2,7 @@ import { AgentMeta, Body, Corpse, DNA, Energy, Intent, ModeState, PlantStats, Po
 import type { SimulationContext } from '../types'
 
 import { applyFoodIntake, eatingGreed } from '@/ecs/nutrition'
+import { corpseEdibleByStage } from '@/ecs/corpseStages'
 
 const CONTACT_DISTANCE = 18
 const MODE = {
@@ -9,6 +10,7 @@ const MODE = {
   Hunt: 3,
   Mate: 5,
   Fight: 7,
+  Patrol: 6,
 } as const
 
 export interface InteractionHooks {
@@ -50,7 +52,7 @@ export function interactionSystem(
       handleDuel(ctx, entity, id, targetId, hooks, aggressionBias)
     } else if (ModeState.mode[entity] === MODE.Graze && targetType === 2) {
       handleGrazing(ctx, entity, id, targetId, hooks, nutrition)
-    } else if (ModeState.mode[entity] === MODE.Hunt && targetType === 3) {
+    } else if ((ModeState.mode[entity] === MODE.Hunt || ModeState.mode[entity] === MODE.Fight) && targetType === 3) {
       handleScavenging(ctx, entity, id, targetId, hooks, nutrition)
     }
   })
@@ -102,6 +104,9 @@ function handleDuel(
       Intent.mode[winner] = MODE.Hunt
       Intent.targetType[winner] = 3
       Intent.targetId[winner] = corpseId
+      ModeState.mode[winner] = MODE.Hunt
+      ModeState.targetType[winner] = 3
+      ModeState.targetId[winner] = corpseId
     }
   }
 }
@@ -163,9 +168,15 @@ function handleGrazing(
 
   const greed = eatingGreed(ctx, preyId)
   const bite = clamp(0.35 + greed * 0.9, 0.2, 1.4)
-  PlantStats.biomass[plantEntity] -= bite
-  PlantStats.moisture[plantEntity] = Math.max(0, PlantStats.moisture[plantEntity] - bite * 0.35)
-  const energyGain = bite * PlantStats.nutrientDensity[plantEntity] * 120
+  const available = Math.max(0, PlantStats.biomass[plantEntity] || 0)
+  if (available <= 0.01) {
+    hooks.removePlant(plantId)
+    return
+  }
+  const consumed = Math.min(available, bite)
+  PlantStats.biomass[plantEntity] = Math.max(0, available - consumed)
+  PlantStats.moisture[plantEntity] = Math.max(0, PlantStats.moisture[plantEntity] - consumed * 0.35)
+  const energyGain = consumed * PlantStats.nutrientDensity[plantEntity] * 120
   applyFoodIntake(ctx, preyEntity, preyId, energyGain, nutrition)
 
   if (PlantStats.biomass[plantEntity] <= 0.1) {
@@ -183,6 +194,27 @@ function handleScavenging(
 ) {
   const corpseEntity = ctx.corpses.get(corpseId)
   if (corpseEntity === undefined) return
+  const archetype =
+    AgentMeta.archetype[eaterEntity] === ArchetypeCode.Scavenger
+      ? 'scavenger'
+      : AgentMeta.archetype[eaterEntity] === ArchetypeCode.Hunter
+        ? 'hunter'
+        : 'prey'
+  const cannibalism = ctx.genomes.get(eaterId)?.cannibalism ?? DNA.cannibalism[eaterEntity] ?? 0
+  const corpseArchetype = decodeArchetypeCode(Corpse.archetype[corpseEntity])
+  if (!corpseEdibleByStage(Corpse.stage[corpseEntity], archetype, corpseArchetype, cannibalism)) {
+    if (ModeState.targetType[eaterEntity] === 3 && ModeState.targetId[eaterEntity] === corpseId) {
+      ModeState.targetType[eaterEntity] = 0
+      ModeState.targetId[eaterEntity] = 0
+      Intent.targetType[eaterEntity] = 0
+      Intent.targetId[eaterEntity] = 0
+      if (ModeState.mode[eaterEntity] === MODE.Hunt) {
+        ModeState.mode[eaterEntity] = MODE.Patrol
+        Intent.mode[eaterEntity] = MODE.Patrol
+      }
+    }
+    return
+  }
 
   const greed = eatingGreed(ctx, eaterId)
   const mass = bodyMass(ctx, eaterEntity)
@@ -208,6 +240,19 @@ function handleScavenging(
       Intent.targetType[eaterEntity] = 3
       Intent.targetId[eaterEntity] = corpseId
     }
+  }
+}
+
+function decodeArchetypeCode(code: number | undefined): 'hunter' | 'prey' | 'scavenger' | undefined {
+  switch (code) {
+    case ArchetypeCode.Hunter:
+      return 'hunter'
+    case ArchetypeCode.Scavenger:
+      return 'scavenger'
+    case ArchetypeCode.Prey:
+      return 'prey'
+    default:
+      return undefined
   }
 }
 

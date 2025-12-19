@@ -2,6 +2,8 @@ import {
   AgentMeta,
   Body,
   Corpse,
+  PlantStats,
+  Digestion,
   DNA,
   Energy,
   Heading,
@@ -19,6 +21,7 @@ import { decodeMoodKind, encodeMoodKind, encodeMoodTier } from '../mood/moodCata
 import type { SimulationContext } from '../types'
 import type { ControlState, TargetRef, DNA as GenomeDNA } from '@/types/sim'
 import { clamp, distanceSquared } from '@/utils/math'
+import { corpseEdibleByStage } from '@/ecs/corpseStages'
 
 function rad(deg: number) {
   return (deg * Math.PI) / 180
@@ -362,7 +365,7 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
 
     const stress = Mood.stress[entity]
     const focus = Mood.focus[entity]
-    const hungerThreshold = (genome?.hungerThreshold ?? Energy.metabolism[entity] * 8) * 1.5
+    const hungerThreshold = genome?.hungerThreshold ?? Energy.metabolism[entity] * 8
     const hungerLine = hungerThreshold + Energy.sleepDebt[entity]
     const hungerRatio = clamp(Energy.value[entity] / Math.max(hungerLine, 1), 0, 1)
     const fatigue = clamp(Mood.fatigue[entity], 0, 1)
@@ -380,8 +383,12 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
     const curiosity = clamp((DNA.curiosity[entity] ?? 0.3) + (controls.curiosityBias ?? 0), 0.05, 1)
     const awareness = clamp((DNA.awareness[entity] ?? 0.5) + (controls.curiosityBias ?? 0) * 0.5, 0.05, 1)
     const archetype = decodeArchetype(AgentMeta.archetype[entity])
-    const preferredFood =
+    const cannibalism = clamp(genome?.cannibalism ?? DNA.cannibalism[entity] ?? 0, 0, 1)
+    let preferredFood =
       genome?.preferredFood && genome.preferredFood.length ? genome.preferredFood : archetypeDiet(archetype)
+    if (archetype === 'hunter') {
+      preferredFood = cannibalism >= 0.5 ? ['prey', 'scavenger', 'hunter'] : ['prey', 'scavenger']
+    }
     const eatsPlants = preferredFood.includes('plant')
     const dietAgents = preferredFood.filter((type) => type !== 'plant')
     const speciesFear = clamp(DNA.speciesFear[entity] ?? DNA.fear[entity] ?? 0.3, 0, 1)
@@ -455,46 +462,51 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
       // `sizeFear` is the sensitivity to size differences. Larger opponents are scarier; much smaller ones are discounted.
       const sizeDelta = clamp(sizeRatio - 1, -0.95, 3)
       const sizeMultiplier = clamp(1 + sizeDelta * sizeFear, 0.05, 3)
+      const potentialFood = dietAgents.includes(otherType)
 
-      // Threat heuristics:
-      // - Same family: treat as safe/ally by default (no automatic fear response).
-      // - Same species but different family: mild conspecific wariness.
-      // - Different species: apply species fear; prey get extra predator fear from hunters.
-      let threatBase = 0
-      if (!sameSpecies) {
-        threatBase = speciesFear
-        if (otherType === 'hunter' && archetype !== 'hunter') {
-          // If the "predator" is much smaller than us, we should not overreact.
-          const predatorScale = clamp((sizeRatio - 0.6) / 0.6, 0, 1)
-          threatBase += (DNA.fear[entity] ?? 0.3) * predatorScale
+      // Treat likely prey as non-threatening (otherwise timid hunters will flee from prey).
+      // Prey can still become threatening via size mismatch (sizeRatio > 1).
+      if (!(potentialFood && sizeRatio <= 1)) {
+        // Threat heuristics:
+        // - Same family: treat as safe/ally by default (no automatic fear response).
+        // - Same species but different family: mild conspecific wariness.
+        // - Different species: apply species fear; prey get extra predator fear from hunters.
+        let threatBase = 0
+        if (!sameSpecies) {
+          threatBase = speciesFear
+          if (otherType === 'hunter' && archetype !== 'hunter') {
+            // If the "predator" is much smaller than us, we should not overreact.
+            const predatorScale = clamp((sizeRatio - 0.6) / 0.6, 0, 1)
+            threatBase += (DNA.fear[entity] ?? 0.3) * predatorScale
+          }
+        } else if (!sameFamily) {
+          threatBase = conspecificFear
         }
-      } else if (!sameFamily) {
-        threatBase = conspecificFear
-      }
 
-      const cowardice = clamp(DNA.cowardice[entity] ?? DNA.fear[entity] ?? 0.3, 0, 2)
-      const proximity = clamp(1 - dist / Math.max(senses.senseRange, 1), 0, 1)
-      const threatScore = clamp(
-        (threatBase + cowardice) * (proximity + awarenessGene) * sizeMultiplier,
-        0,
-        5,
-      )
+        const cowardice = clamp(DNA.cowardice[entity] ?? DNA.fear[entity] ?? 0.3, 0, 2)
+        const proximity = clamp(1 - dist / Math.max(senses.senseRange, 1), 0, 1)
+        const threatScore = clamp(
+          (threatBase + cowardice) * (proximity + awarenessGene) * sizeMultiplier,
+          0,
+          5,
+        )
 
-      if (threatScore > threatLevel && dist < closestPredatorDist) {
-        closestPredatorDist = dist
-        threatLevel = threatScore
-        predatorTarget = { kind: 'agent', id: AgentMeta.id[otherEntity] }
-        // Immediate reflex: if threat is pronounced, trigger flee right now
-        if (threatScore > escapeTendency && dist <= dangerRadius) {
-          Intent.mode[entity] = 4 // Flee
-          Intent.targetType[entity] = 1
-          Intent.targetId[entity] = predatorTarget.id
-          ModeState.dangerTimer[entity] = Math.max(ModeState.dangerTimer[entity], escapeDuration)
-          ModeState.dangerTimer[entity] = Math.max(
-            ModeState.dangerTimer[entity],
-            dangerRadius / Math.max(DNA.baseSpeed[entity], 1),
-          )
-          forcedFlee = true
+        if (threatScore > threatLevel && dist < closestPredatorDist) {
+          closestPredatorDist = dist
+          threatLevel = threatScore
+          predatorTarget = { kind: 'agent', id: AgentMeta.id[otherEntity] }
+          // Immediate reflex: if threat is pronounced, trigger flee right now
+          if (threatScore > escapeTendency && dist <= dangerRadius) {
+            Intent.mode[entity] = 4 // Flee
+            Intent.targetType[entity] = 1
+            Intent.targetId[entity] = predatorTarget.id
+            ModeState.dangerTimer[entity] = Math.max(ModeState.dangerTimer[entity], escapeDuration)
+            ModeState.dangerTimer[entity] = Math.max(
+              ModeState.dangerTimer[entity],
+              dangerRadius / Math.max(DNA.baseSpeed[entity], 1),
+            )
+            forcedFlee = true
+          }
         }
       }
 
@@ -553,13 +565,20 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
 
     const isScavenger = archetype === 'scavenger'
     const scavengerAffinity = clamp(isScavenger ? 1 : (genome?.scavengerAffinity ?? 0), 0, 1)
-    if ((dietAgents.length || isScavenger) && (hungerRatio < 0.85 || bestPreyTarget === null)) {
+    if (
+      (dietAgents.length || isScavenger) &&
+      (hungerRatio < 0.85 || bestPreyTarget === null || archetype === 'hunter')
+    ) {
       const corpseCandidates = ctx.corpseIndex.query(mePos, senses.senseRange)
       corpseCandidates.forEach((bucket) => {
         const corpseEntity = ctx.corpses.get(bucket.id)
         if (corpseEntity === undefined) return
         const nutrients = Corpse.nutrients[corpseEntity] || 0
         if (nutrients <= 0.1) return
+        const corpseArchetype = Corpse.archetype[corpseEntity]
+          ? decodeArchetype(Corpse.archetype[corpseEntity])
+          : undefined
+        if (!corpseEdibleByStage(Corpse.stage[corpseEntity], archetype, corpseArchetype, cannibalism)) return
         const corpsePos = { x: Position.x[corpseEntity], y: Position.y[corpseEntity] }
         const dx = corpsePos.x - mePos.x
         const dy = corpsePos.y - mePos.y
@@ -585,7 +604,16 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
     if (ModeState.targetType[entity] === 3) {
       const currentCorpseId = ModeState.targetId[entity]
       const corpseEntity = ctx.corpses.get(currentCorpseId)
-      if (corpseEntity !== undefined && (Corpse.nutrients[corpseEntity] || 0) > 0.1) {
+      if (
+        corpseEntity !== undefined &&
+        (Corpse.nutrients[corpseEntity] || 0) > 0.1 &&
+        corpseEdibleByStage(
+          Corpse.stage[corpseEntity],
+          archetype,
+          Corpse.archetype[corpseEntity] ? decodeArchetype(Corpse.archetype[corpseEntity]) : undefined,
+          cannibalism,
+        )
+      ) {
         const corpsePos = { x: Position.x[corpseEntity], y: Position.y[corpseEntity] }
         const dx = corpsePos.x - mePos.x
         const dy = corpsePos.y - mePos.y
@@ -623,6 +651,7 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
       plantCandidates.forEach((bucket) => {
         const plantEntity = ctx.plants.get(bucket.id)
         if (plantEntity === undefined) return
+        if ((PlantStats.biomass[plantEntity] || 0) <= 0.12) return
         const plantPos = { x: Position.x[plantEntity], y: Position.y[plantEntity] }
         const dx = plantPos.x - mePos.x
         const dy = plantPos.y - mePos.y
@@ -658,11 +687,29 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
     }
 
     const socialCohesion = allyCount === 0 ? 0 : clamp(allyProximity / allyCount, 0, 1)
+    const eatingGreed = clamp(genome?.eatingGreed ?? 0.5, 0, 1)
+    const digestionBaseline = 120 + myBodyMass * 90
+    const metabolismGene = clamp(DNA.metabolism[entity] ?? 8, 2, 16)
+    const metabolismFactor = clamp(1.2 - (metabolismGene - 8) * 0.05, 0.6, 1.4)
+    const digestionPressure = clamp(
+      ((Digestion.recentIntake[entity] ?? 0) / Math.max(digestionBaseline, 1)) *
+        (0.7 + eatingGreed * 0.6) *
+        metabolismFactor,
+      0,
+      1,
+    )
+    const staminaGene = clamp(DNA.stamina[entity] ?? 1, 0.4, 1.6)
+    const staminaFactor = clamp(1.15 - (staminaGene - 1) * 0.6, 0.5, 1.5)
+    const sleepEfficiency = clamp(DNA.sleepEfficiency[entity] ?? 0.8, 0.4, 1.2)
+    const efficiencyFactor = clamp(1.1 - (sleepEfficiency - 0.8) * 0.5, 0.6, 1.4)
+    const recoveryPressure = clamp(fatigue * staminaFactor + sleepPressure * 0.35 * efficiencyFactor, 0, 1)
     const moodInput: MoodMachineInput = {
       hungerRatio,
       forageStartRatio: clamp(genome?.forageStartRatio ?? 0.65, 0.25, 0.95),
       fatigue,
       sleepPressure,
+      digestionPressure,
+      recoveryPressure,
       libido: libidoForMood,
       threatLevel: clamp(threatLevel, 0, 1),
       socialCohesion,
@@ -825,7 +872,7 @@ function decodeArchetype(code: number): 'hunter' | 'prey' | 'scavenger' {
 }
 
 function archetypeDiet(archetype: string) {
-  if (archetype === 'hunter') return ['prey']
+  if (archetype === 'hunter') return ['prey', 'scavenger']
   if (archetype === 'scavenger') return []
   return ['plant']
 }

@@ -1,4 +1,5 @@
 import type { DNA } from '@/types/sim'
+import { clamp } from '@/utils/math'
 
 export const GENE_KEYS = [
   'baseSpeed',
@@ -49,6 +50,8 @@ export const GENE_KEYS = [
   'eatingGreed',
   // NOTE: appended to preserve mutation-mask indices for existing genes.
   'maturityAgeYears',
+  // NOTE: appended to preserve mutation-mask indices for existing genes.
+  'cannibalism',
 ] as const
 
 export type GeneKey = typeof GENE_KEYS[number]
@@ -78,6 +81,60 @@ export type GeneDominance = Record<GeneKey, number>
 export const DEFAULT_DOMINANCE: GeneDominance = Object.fromEntries(
   GENE_KEYS.map((key) => [key, key === 'mutationRate' ? 0.2 : 0.5]),
 ) as GeneDominance
+
+export const GENE_RANGES: Record<GeneKey, { min: number; max: number }> = {
+  baseSpeed: { min: 120, max: 520 },
+  visionRange: { min: 140, max: 420 },
+  hungerThreshold: { min: 20, max: 140 },
+  fatCapacity: { min: 40, max: 20000 },
+  fatBurnThreshold: { min: 0, max: 20000 },
+  patrolThreshold: { min: 0, max: 200 },
+  aggression: { min: 0, max: 1 },
+  bravery: { min: 0, max: 1 },
+  power: { min: 20, max: 200 },
+  defence: { min: 20, max: 200 },
+  fightPersistence: { min: 0, max: 1 },
+  escapeTendency: { min: 0, max: 1 },
+  escapeDuration: { min: 0.5, max: 8 },
+  lingerRate: { min: 0, max: 1 },
+  dangerRadius: { min: 80, max: 320 },
+  attentionSpan: { min: 0.2, max: 1.5 },
+  libidoThreshold: { min: 0.1, max: 1 },
+  libidoGainRate: { min: 0.01, max: 0.2 },
+  mutationRate: { min: 0.0001, max: 0.2 },
+  bodyMass: { min: 0.2, max: 80 },
+  metabolism: { min: 2, max: 16 },
+  turnRate: { min: 0.5, max: 4 },
+  curiosity: { min: 0, max: 1 },
+  cohesion: { min: 0, max: 1 },
+  fear: { min: 0, max: 1 },
+  cowardice: { min: 0, max: 1 },
+  speciesFear: { min: 0.1, max: 1 },
+  conspecificFear: { min: 0.05, max: 0.8 },
+  sizeFear: { min: 0.1, max: 1 },
+  dependency: { min: 0, max: 1 },
+  independenceAge: { min: 5, max: 60 },
+  camo: { min: 0.05, max: 0.9 },
+  awareness: { min: 0.3, max: 1 },
+  fertility: { min: 0.2, max: 0.9 },
+  gestationCost: { min: 5, max: 40 },
+  moodStability: { min: 0.1, max: 1 },
+  stamina: { min: 0.4, max: 2 },
+  circadianBias: { min: -1, max: 1 },
+  sleepEfficiency: { min: 0.4, max: 1.2 },
+  scavengerAffinity: { min: 0, max: 1 },
+  preySizeTargetRatio: { min: 0.05, max: 1.5 },
+  forageStartRatio: { min: 0.35, max: 0.95 },
+  eatingGreed: { min: 0, max: 1 },
+  maturityAgeYears: { min: 1, max: 20 },
+  cannibalism: { min: 0, max: 1 },
+}
+
+export function clampGeneValue(gene: GeneKey, value: number): number {
+  const range = GENE_RANGES[gene]
+  if (!range || !Number.isFinite(value)) return value
+  return clamp(value, range.min, range.max)
+}
 
 export function applyGeneDominance(
   dominance: GeneDominance,
@@ -179,6 +236,8 @@ export function randomGeneValue(gene: GeneKey, rng: () => number): number {
     case 'sleepEfficiency':
       return 0.5 + rng() * 0.5 // 0.5..1
     case 'scavengerAffinity':
+      return rng()
+    case 'cannibalism':
       return rng()
     default:
       return rng()

@@ -57,6 +57,8 @@ export interface DNA {
   fertility: number
   gestationCost: number
   moodStability: number
+  // 0..1: >= 0.5 allows eating own archetype.
+  cannibalism: number
   // Age in simulation years required before the agent can reproduce.
   // Must be in [1, 20]; species-level variation is encoded genetically.
   maturityAgeYears?: number
@@ -289,11 +291,16 @@ export interface PlantState {
   moisture: number
 }
 
+export type CorpseStage = 'fresh' | 'dead'
+
 export interface CorpseState {
   id: number
   position: Vector2
   radius: number
   nutrients: number
+  archetype?: Archetype
+  stage?: CorpseStage
+  freshTime?: number
   decay: number
   maxDecay: number
 }

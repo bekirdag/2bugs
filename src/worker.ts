@@ -162,6 +162,7 @@ function restartTelemetry() {
         payload: {
           timings: lastTimings,
           geneAverages: summarizeGenesFromContext(world),
+          eatCounts: world.metrics.eatCounts ?? { hunter: 0, prey: 0, scavenger: 0 },
           fps: lastFps,
         },
       } satisfies WorkerToMainMessage,

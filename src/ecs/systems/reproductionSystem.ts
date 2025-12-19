@@ -1,4 +1,4 @@
-import { AgentMeta, DNA as DNAComp, Energy, ModeState, Position, Reproduction } from '../components'
+import { AgentMeta, Body, DNA as DNAComp, Energy, Heading, ModeState, Position, Reproduction } from '../components'
 import type { SimulationContext } from '../types'
 
 import type { ControlState, DNA, OrganPlacement, LegMount } from '@/types/sim'
@@ -7,6 +7,7 @@ import {
   markGeneMutation,
   applyGeneDominance,
   DEFAULT_DOMINANCE,
+  clampGeneValue,
   randomGeneValue,
   GENE_KEYS,
   type GeneKey,
@@ -57,7 +58,6 @@ export function reproductionSystem(
   const paired = new Set<number>()
   ctx.agents.forEach((entity, id) => {
     if (ModeState.sexCooldown[entity] > 0) {
-      ModeState.sexCooldown[entity] = Math.max(0, ModeState.sexCooldown[entity] - dt)
       return
     }
     if (ctx.pregnancies.has(id)) {
@@ -110,8 +110,8 @@ export function reproductionSystem(
     ModeState.sexCooldown[mateEntity] = 5
     const sexCostA = (DNAComp.gestationCost[entity] ?? 8) * 1.5
     const sexCostB = (DNAComp.gestationCost[mateEntity] ?? 8) * 1.5
-    Energy.value[entity] -= sexCostA
-    Energy.value[mateEntity] -= sexCostB
+    Energy.value[entity] = Math.max(0, Energy.value[entity] - sexCostA)
+    Energy.value[mateEntity] = Math.max(0, Energy.value[mateEntity] - sexCostB)
 
     const fertility = ((DNAComp.fertility[entity] ?? 0.3) + (DNAComp.fertility[mateEntity] ?? 0.3)) / 2
     if (ctx.rng() < fertility) {
@@ -183,20 +183,21 @@ function crossoverDNA(
   globalMutationRate: number,
 ): { dna: DNA; mutationMask: number } {
   const dominance = DEFAULT_DOMINANCE
-	  const child: DNA = {
-	    archetype: a.archetype,
-	    biome: ctx.rng() < 0.5 ? a.biome ?? 'land' : b.biome ?? 'land',
-	    familyColor: ctx.rng() < 0.5 ? a.familyColor : b.familyColor,
-	    baseSpeed: 0,
-	    visionRange: 0,
-	    hungerThreshold: 0,
-	    forageStartRatio: 0,
-	    eatingGreed: 0,
-	    maturityAgeYears: 0,
-	    fatCapacity: 0,
-	    fatBurnThreshold: 0,
-	    patrolThreshold: 0,
-	    aggression: 0,
+  const childBiome = ctx.rng() < 0.5 ? a.biome ?? 'land' : b.biome ?? 'land'
+  const child: DNA = {
+    archetype: a.archetype,
+    biome: childBiome,
+    familyColor: ctx.rng() < 0.5 ? a.familyColor : b.familyColor,
+    baseSpeed: 0,
+    visionRange: 0,
+    hungerThreshold: 0,
+    forageStartRatio: 0,
+    eatingGreed: 0,
+    maturityAgeYears: 0,
+    fatCapacity: 0,
+    fatBurnThreshold: 0,
+    patrolThreshold: 0,
+    aggression: 0,
     bravery: 0,
     power: 0,
     defence: 0,
@@ -227,6 +228,7 @@ function crossoverDNA(
     fertility: 0,
     gestationCost: 0,
     moodStability: 0,
+    cannibalism: 0,
     preferredFood: [],
     stamina: 0,
     circadianBias: 0,
@@ -237,16 +239,22 @@ function crossoverDNA(
     bodyPlan: createBaseBodyPlan(a.archetype, 'land'),
   }
 
-  const parentPlanA = a.bodyPlan ?? createBaseBodyPlan(a.archetype, a.biome ?? child.biome)
-  const parentPlanB = b.bodyPlan ?? createBaseBodyPlan(b.archetype, b.biome ?? child.biome)
-  child.bodyPlan = cloneBodyPlan(ctx.rng() < 0.5 ? parentPlanA : parentPlanB)
+  const parentPlanA = a.bodyPlan ?? createBaseBodyPlan(a.archetype, a.biome ?? childBiome)
+  const parentPlanB = b.bodyPlan ?? createBaseBodyPlan(b.archetype, b.biome ?? childBiome)
+  const planCandidates: Array<DNA['bodyPlan']> = []
+  if ((a.biome ?? childBiome) === childBiome) planCandidates.push(parentPlanA)
+  if ((b.biome ?? childBiome) === childBiome) planCandidates.push(parentPlanB)
+  const selectedPlan = planCandidates.length
+    ? planCandidates[Math.floor(ctx.rng() * planCandidates.length)]
+    : createBaseBodyPlan(child.archetype, childBiome)
+  child.bodyPlan = cloneBodyPlan(selectedPlan)
   child.bodyPlanVersion = BODY_PLAN_VERSION
 
   let mutationMask = 0
   NUMERIC_GENES.forEach((gene) => {
     const aValue = a[gene] ?? randomGeneValue(gene, ctx.rng)
     const bValue = b[gene] ?? randomGeneValue(gene, ctx.rng)
-    child[gene] = applyGeneDominance(dominance, gene, aValue, bValue, ctx.rng)
+    child[gene] = clampGeneValue(gene, applyGeneDominance(dominance, gene, aValue, bValue, ctx.rng))
   })
 
   // Combine global UI control with the heritable mutation-rate gene.
@@ -272,6 +280,7 @@ function crossoverDNA(
       const delta = 1 + (ctx.rng() - 0.5) * 0.4
       child[targetGene] *= delta
     }
+    child[targetGene] = clampGeneValue(targetGene, child[targetGene])
     ctx.metrics.mutations++
     mutationMask = markGeneMutation(mutationMask, targetGene)
     if (mutateBodyPlan && child.bodyPlan) {
@@ -280,7 +289,29 @@ function crossoverDNA(
     }
   }
 
+  applyGeneConstraints(child)
   return { dna: prepareDNA(child), mutationMask }
+}
+
+function applyGeneConstraints(child: DNA) {
+  child.fatCapacity = clampGeneValue('fatCapacity', child.fatCapacity)
+  child.fatBurnThreshold = clampGeneValue('fatBurnThreshold', child.fatBurnThreshold)
+  if (Number.isFinite(child.fatCapacity) && child.fatCapacity > 0) {
+    child.fatBurnThreshold = clamp(
+      child.fatBurnThreshold,
+      child.fatCapacity * 0.15,
+      child.fatCapacity * 0.85,
+    )
+  }
+  child.hungerThreshold = clampGeneValue('hungerThreshold', child.hungerThreshold)
+  child.patrolThreshold = clampGeneValue('patrolThreshold', child.patrolThreshold)
+  if (Number.isFinite(child.hungerThreshold) && child.hungerThreshold > 0) {
+    child.patrolThreshold = clamp(
+      child.patrolThreshold,
+      child.hungerThreshold * 0.2,
+      child.hungerThreshold * 1.2,
+    )
+  }
 }
 
 function extractDNA(ctx: SimulationContext, entity: number): DNA {
@@ -292,62 +323,75 @@ function extractDNA(ctx: SimulationContext, entity: number): DNA {
       bodyPlan: cloneBodyPlan(stored.bodyPlan),
     }
   }
-	  return prepareDNA({
-	    archetype: decodeArchetype(AgentMeta.archetype[entity]),
-	    biome: 'land',
-	    familyColor: '#ffffff',
-	    baseSpeed: DNAComp.baseSpeed[entity],
-	    visionRange: DNAComp.visionRange[entity],
-	    hungerThreshold: Energy.metabolism[entity] * 8,
-	    forageStartRatio: 0.65,
-	    eatingGreed: 0.5,
-	    fatCapacity: Energy.fatCapacity[entity],
-	    fatBurnThreshold: Energy.fatCapacity[entity] * 0.5,
-	    patrolThreshold: DNAComp.curiosity[entity] * 100,
-	    aggression: DNAComp.aggression[entity],
+  const archetype = decodeArchetype(AgentMeta.archetype[entity])
+  const familyColor = `#${AgentMeta.familyColor[entity].toString(16).padStart(6, '0')}`
+  const curiosity = DNAComp.curiosity[entity] ?? 0.3
+  const fear = DNAComp.fear[entity] ?? 0.3
+  const aggression = DNAComp.aggression[entity] ?? 0.3
+  const vision = DNAComp.visionRange[entity] || 200
+  const metabolism = DNAComp.metabolism[entity] || Energy.metabolism[entity] || 8
+  const hungerThreshold = metabolism * 8
+  const fatCapacity = Energy.fatCapacity[entity] || 120
+  const bodyMass = Body.mass[entity] || fatCapacity / 120
+  return prepareDNA({
+    archetype,
+    biome: 'land',
+    familyColor,
+    baseSpeed: DNAComp.baseSpeed[entity] || 200,
+    visionRange: vision,
+    hungerThreshold,
+    forageStartRatio: clamp(0.55 + curiosity * 0.35, 0.35, 0.95),
+    eatingGreed: clamp(0.4 + curiosity * 0.8, 0, 1),
+    fatCapacity,
+    fatBurnThreshold: fatCapacity * 0.5,
+    patrolThreshold: clamp(curiosity, 0, 1) * hungerThreshold,
+    aggression,
     bravery: 0.5,
     power: 80,
-    defence: 50,
-    fightPersistence: 0.5,
-    escapeTendency: 0.5,
+    defence: 60,
+    fightPersistence: clamp(aggression, 0.05, 1),
+    escapeTendency: clamp(fear + 0.15, 0.05, 1),
     escapeDuration: 2,
-    lingerRate: 0.5,
-    dangerRadius: DNAComp.visionRange[entity] * 0.5,
+    lingerRate: clamp(curiosity, 0.1, 1),
+    dangerRadius: Math.max(120, vision * 0.5),
     attentionSpan: 0.5,
     libidoThreshold: Reproduction.libidoThreshold[entity] || 0.6,
-    libidoGainRate: DNAComp.fertility[entity] || 0.2,
+    libidoGainRate: clamp((DNAComp.fertility[entity] ?? 0.3) * 0.4, 0.01, 0.2),
     mutationRate: DNAComp.mutationRate[entity] || 0.01,
-    bodyMass: Energy.fatCapacity[entity] / 100,
-    metabolism: DNAComp.sleepNeed[entity] || 8,
-    turnRate: DNAComp.curiosity[entity] || 1,
-    curiosity: DNAComp.curiosity[entity] || 0.3,
-    cohesion: DNAComp.socialDrive[entity] || 0.3,
-    fear: DNAComp.fear[entity] || 0.3,
+    bodyMass,
+    metabolism,
+    turnRate: Heading.turnRate[entity] || 1,
+    curiosity,
+    cohesion: DNAComp.socialDrive[entity] ?? 0.3,
+    fear,
     dependency: DNAComp.dependency ? DNAComp.dependency[entity] : 0.5,
     independenceAge: DNAComp.independenceAge ? DNAComp.independenceAge[entity] : 20,
-    cowardice: DNAComp.cowardice ? DNAComp.cowardice[entity] : DNAComp.fear[entity] || 0.3,
-    camo: 0.3,
-    awareness: 0.5,
-    fertility: DNAComp.fertility[entity] || 0.3,
-    gestationCost: DNAComp.gestationCost ? DNAComp.gestationCost[entity] : DNAComp.sleepNeed[entity] || 5,
-    moodStability: 0.5,
+    cowardice: DNAComp.cowardice ? DNAComp.cowardice[entity] : fear,
+    camo: DNAComp.camo ? DNAComp.camo[entity] : 0.3,
+    awareness: DNAComp.awareness ? DNAComp.awareness[entity] : clamp(vision / 360, 0.2, 1),
+    fertility: DNAComp.fertility[entity] ?? 0.3,
+    gestationCost: DNAComp.gestationCost
+      ? DNAComp.gestationCost[entity]
+      : clamp(metabolism * 1.5, 5, 40),
+    moodStability: DNAComp.moodStability ? DNAComp.moodStability[entity] : 0.5,
+    cannibalism: DNAComp.cannibalism ? DNAComp.cannibalism[entity] : 0,
     preferredFood:
-      decodeArchetype(AgentMeta.archetype[entity]) === 'hunter'
-        ? ['prey']
-        : decodeArchetype(AgentMeta.archetype[entity]) === 'scavenger'
+      archetype === 'hunter'
+        ? ['prey', 'scavenger']
+        : archetype === 'scavenger'
           ? []
           : ['plant'],
     stamina: DNAComp.stamina ? DNAComp.stamina[entity] : 1,
     circadianBias: DNAComp.circadianBias ? DNAComp.circadianBias[entity] : 0,
     sleepEfficiency: DNAComp.sleepEfficiency ? DNAComp.sleepEfficiency[entity] : 0.8,
     scavengerAffinity: DNAComp.scavengerAffinity ? DNAComp.scavengerAffinity[entity] : 0,
-    senseUpkeep: 0,
-    speciesFear: DNAComp.speciesFear ? DNAComp.speciesFear[entity] : DNAComp.fear[entity] ?? 0.4,
+    senseUpkeep: DNAComp.senseUpkeep ? DNAComp.senseUpkeep[entity] : 0,
+    speciesFear: DNAComp.speciesFear ? DNAComp.speciesFear[entity] : fear,
     conspecificFear: DNAComp.conspecificFear ? DNAComp.conspecificFear[entity] : 0.25,
     sizeFear: DNAComp.sizeFear ? DNAComp.sizeFear[entity] : 0.5,
-    preySizeTargetRatio: decodeArchetype(AgentMeta.archetype[entity]) === 'hunter' ? 0.6 : 0.9,
+    preySizeTargetRatio: archetype === 'hunter' ? 0.6 : 0.9,
     bodyPlanVersion: BODY_PLAN_VERSION,
-    bodyPlan: createBaseBodyPlan(decodeArchetype(AgentMeta.archetype[entity]), 'land'),
+    bodyPlan: createBaseBodyPlan(archetype, 'land'),
   })
 }
 

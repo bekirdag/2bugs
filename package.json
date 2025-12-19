@@ -24,7 +24,8 @@
     "test:tail": "cross-env TSX_TSCONFIG_PATHS=true tsx --tsconfig tsconfig.app.json tests/tailAgility.test.ts",
     "test:legs": "cross-env TSX_TSCONFIG_PATHS=true tsx --tsconfig tsconfig.app.json tests/legsTradeoff.test.ts",
     "test:organs": "cross-env TSX_TSCONFIG_PATHS=true tsx --tsconfig tsconfig.app.json tests/missingOrgansSensing.test.ts",
-    "test": "npm run test:legacy && npm run test:movement && npm run test:interaction && npm run test:reproduction && npm run test:manure && npm run test:persistence && npm run test:vision && npm run test:bodyplan && npm run test:hearing && npm run test:gait && npm run test:rocks && npm run test:tuning && npm run test:tail && npm run test:legs && npm run test:organs"
+    "test:hunting": "cross-env TSX_TSCONFIG_PATHS=true tsx --tsconfig tsconfig.app.json tests/huntingBehaviour.test.ts",
+    "test": "npm run test:legacy && npm run test:movement && npm run test:interaction && npm run test:reproduction && npm run test:manure && npm run test:persistence && npm run test:vision && npm run test:bodyplan && npm run test:hearing && npm run test:gait && npm run test:rocks && npm run test:tuning && npm run test:tail && npm run test:legs && npm run test:organs && npm run test:hunting"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^6.2.1",

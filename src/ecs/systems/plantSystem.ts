@@ -3,18 +3,27 @@ import { removeEntity } from 'bitecs'
 import type { SimulationContext } from '../types'
 
 import { clamp } from '@/utils/math'
+import { FERTILIZER_COST_PER_BIOMASS } from '@/ecs/fertilization'
 
 const SEASON_TICKS = 2400
 const MAX_BIOMASS = 1.6
 const MIN_BIOMASS = 0.1
 const GROWTH_SCALE = 0.12
 const FERTILIZER_GROWTH_MULTIPLIER = 10
-const FERTILIZER_COST_PER_BIOMASS = 320 // nutrient units per 1.0 biomass of accelerated growth
+// nutrient units per 1.0 biomass of accelerated growth
 
 export function plantGrowthSystem(ctx: SimulationContext, dt: number) {
   const phase = ((ctx.tick % SEASON_TICKS) / SEASON_TICKS) * Math.PI * 2
   const season = Math.sin(phase)
   const plantCount = Math.max(ctx.plants.size, 1)
+
+  let maxFertilizerRadius = 0
+  if (ctx.fertilizers.size > 0) {
+    ctx.fertilizers.forEach((fertilizerEntity) => {
+      const radius = Fertilizer.radius[fertilizerEntity] || 0
+      if (radius > maxFertilizerRadius) maxFertilizerRadius = radius
+    })
+  }
 
   let totalBiomass = 0
   ctx.plants.forEach((entity) => {
@@ -38,7 +47,7 @@ export function plantGrowthSystem(ctx: SimulationContext, dt: number) {
     // Fertilizer phase: persistent soil nutrients accelerate growth up to 10×.
     // Plants consume fertilizer mass as they realize this accelerated growth.
     let extraGrowth = 0
-    const fertilizer = findNearbyFertilizer(ctx, entity)
+    const fertilizer = maxFertilizerRadius > 0 ? findNearbyFertilizer(ctx, entity, maxFertilizerRadius) : null
     if (fertilizer) {
       const [fertilizerId, fertilizerEntity] = fertilizer
       const remainingCapacity = MAX_BIOMASS - (PlantStats.biomass[entity] + baseGrowth)
@@ -78,11 +87,14 @@ export function plantGrowthSystem(ctx: SimulationContext, dt: number) {
   })
 }
 
-function findNearbyFertilizer(ctx: SimulationContext, plantEntity: number): [number, number] | null {
+function findNearbyFertilizer(
+  ctx: SimulationContext,
+  plantEntity: number,
+  maxRadius: number,
+): [number, number] | null {
   if (ctx.fertilizers.size === 0) return null
   const position = { x: Position.x[plantEntity], y: Position.y[plantEntity] }
-  // Cap query radius to the maximum fertilizer radius.
-  const candidates = ctx.fertilizerIndex.query(position, 240)
+  const candidates = ctx.fertilizerIndex.query(position, Math.max(0, maxRadius))
   let bestId: number | null = null
   let bestEntity: number | null = null
   let bestScore = -Infinity

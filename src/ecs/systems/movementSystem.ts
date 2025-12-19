@@ -155,6 +155,9 @@ const MODE = {
   Mate: 5,
   Patrol: 6,
   Fight: 7,
+  Idle: 8,
+  Digest: 9,
+  Recover: 10,
 } as const
 
 const FIGHT_HOLD_RADIUS = 20
@@ -177,7 +180,11 @@ export function movementSystem(
 
   ctx.agents.forEach((entity, id) => {
     const mode = ModeState.mode[entity]
-    const resting = mode === MODE.Sleep
+    const resting =
+      mode === MODE.Sleep ||
+      mode === MODE.Idle ||
+      mode === MODE.Digest ||
+      mode === MODE.Recover
     const targetPosSnapshot = resolveTargetPosition(ctx, entity)
     const distanceToTarget =
       targetPosSnapshot &&

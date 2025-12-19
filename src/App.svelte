@@ -565,6 +565,21 @@ $: {
             </span>
           </div>
         </div>
+        <h3>Eat counts</h3>
+        <div class="timing-grid">
+          <div class="timing-row">
+            <span>Hunters</span>
+            <span>{telemetry.eatCounts?.hunter ?? 0}</span>
+          </div>
+          <div class="timing-row">
+            <span>Prey</span>
+            <span>{telemetry.eatCounts?.prey ?? 0}</span>
+          </div>
+          <div class="timing-row">
+            <span>Scavengers</span>
+            <span>{telemetry.eatCounts?.scavenger ?? 0}</span>
+          </div>
+        </div>
       {:else}
         <p class="muted">Telemetry warming up…</p>
       {/if}

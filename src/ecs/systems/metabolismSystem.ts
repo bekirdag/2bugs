@@ -13,6 +13,9 @@ const MODE = {
   Flee: 4,
   Mate: 5,
   Patrol: 6,
+  Idle: 8,
+  Digest: 9,
+  Recover: 10,
 } as const
 
 // The sim's current energy units were tuned for much shorter-lived agents.
@@ -38,8 +41,12 @@ export function metabolismSystem(
 
   ctx.agents.forEach((entity, id) => {
     const mode = ModeState.mode[entity]
-    const behaviorLocked = mode === MODE.Flee || mode === MODE.Mate
     const genome = ctx.genomes.get(id)
+    const attentionSpan = clamp(genome?.attentionSpan ?? 0.5, 0.2, 1.2)
+    const behaviorLockStrength = mode === MODE.Flee || mode === MODE.Mate ? clamp(attentionSpan * 2, 0, 1) : 0
+    const moodStability = clamp(DNA.moodStability[entity] ?? 0.5, 0.1, 1)
+    const moodVolatility = clamp(1 - (moodStability - 0.5) * 0.8, 0.6, 1.4)
+    const moodScale = (1 - behaviorLockStrength) * moodVolatility
     const currentMass = clamp(Body.mass[entity] || genome?.bodyMass || (Energy.fatCapacity[entity] || 120) / 120, 0.2, 80)
     const birthTick = ctx.birthTick.get(id) ?? ctx.tick
     const yearTicks = Math.max(1, ctx.yearTicks || controls.yearTicks || SIM_YEAR_TICKS)
@@ -61,6 +68,7 @@ export function metabolismSystem(
     const stressLoad = 1 + Mood.stress[entity] * 0.25
     const hungerMultiplier = mode === MODE.Hunt ? 1.35 : mode === MODE.Flee ? 1.7 : 1
     const staminaFactor = 1 / Math.max(DNA.stamina[entity] ?? 1, 0.4)
+    const metabolismFactor = clamp((DNA.metabolism[entity] ?? 8) / 8, 0.6, 1.6)
     const burnRate =
       DNA.metabolism[entity] * stressLoad * hungerMultiplier * dt * speed * staminaFactor * 0.25 * sizeMetabolicFactor
 
@@ -97,11 +105,11 @@ export function metabolismSystem(
     // Running / movement drain scaled by actual velocity
     const movementSpeed = Math.sqrt(Velocity.x[entity] * Velocity.x[entity] + Velocity.y[entity] * Velocity.y[entity])
     const runDrain =
-      movementSpeed * dt * speed * (mode === MODE.Flee ? 0.35 : mode === MODE.Hunt ? 0.25 : 0.12)
+      movementSpeed * dt * speed * (mode === MODE.Flee ? 0.35 : mode === MODE.Hunt ? 0.25 : 0.12) * staminaFactor
 
     // Fat mass tax even while idle
     const fatRatio = Energy.fatCapacity[entity] > 0 ? Energy.fatStore[entity] / Energy.fatCapacity[entity] : 0
-    const massPenalty = fatRatio * currentMass * dt * speed * 0.1
+    const massPenalty = fatRatio * currentMass * dt * speed * 0.1 * metabolismFactor
 
     // Pregnancy upkeep
     const isPregnant = ctx.pregnancies.has(id)
@@ -123,9 +131,12 @@ export function metabolismSystem(
       }
     }
     if (Energy.value[entity] < 0 && Energy.fatStore[entity] > 0) {
-      const repay = Math.min(Energy.fatStore[entity], Math.abs(Energy.value[entity]))
+      const deficit = Math.abs(Energy.value[entity])
+      const fatConversionFactor = clamp((DNA.sleepEfficiency[entity] ?? 0.8) / 0.8, 0.6, 1.4)
+      const fatNeeded = deficit / fatConversionFactor
+      const repay = Math.min(Energy.fatStore[entity], fatNeeded)
       Energy.fatStore[entity] -= repay
-      Energy.value[entity] += repay
+      Energy.value[entity] += repay * fatConversionFactor
     }
 
     // Grow body mass over time when well-fed: convert a portion of surplus energy/fat into lean mass
@@ -184,32 +195,40 @@ export function metabolismSystem(
       }
     }
 
-    if (Energy.value[entity] <= 0 && Energy.fatStore[entity] <= 0) {
+    const hungerThreshold = genome?.hungerThreshold ?? Energy.metabolism[entity] * 8
+    const survivalBuffer = Math.max(0, (DNA.stamina[entity] ?? 1) - 1) * hungerThreshold * 0.08
+    if (Energy.value[entity] <= -survivalBuffer && Energy.fatStore[entity] <= 0) {
       fallen.push(id)
       return
     }
 
-    const hungerThreshold = genome?.hungerThreshold ?? Energy.metabolism[entity] * 8
     const hunger = Energy.value[entity] < hungerThreshold + Energy.sleepDebt[entity]
     const wantsRest = Energy.value[entity] > hungerThreshold * 1.5
 
-    if (hunger && !behaviorLocked) {
-      Mood.focus[entity] = clamp(Mood.focus[entity] + 0.4 * dt, 0, 1)
-      Mood.stress[entity] = clamp(Mood.stress[entity] + 0.35 * dt)
-    } else if (wantsRest && !behaviorLocked) {
-      Mood.stress[entity] = clamp(Mood.stress[entity] - 0.5 * dt)
-      Mood.focus[entity] = clamp(Mood.focus[entity] - 0.2 * dt)
-    } else if (!behaviorLocked) {
-      Mood.focus[entity] = clamp(Mood.focus[entity] - 0.1 * dt)
+    if (hunger) {
+      Mood.focus[entity] = clamp(Mood.focus[entity] + 0.4 * dt * moodScale, 0, 1)
+      Mood.stress[entity] = clamp(Mood.stress[entity] + 0.35 * dt * moodScale)
+    } else if (wantsRest) {
+      Mood.stress[entity] = clamp(Mood.stress[entity] - 0.5 * dt * moodScale)
+      Mood.focus[entity] = clamp(Mood.focus[entity] - 0.2 * dt * moodScale)
+    } else {
+      Mood.focus[entity] = clamp(Mood.focus[entity] - 0.1 * dt * moodScale)
     }
 
-    Mood.social[entity] = clamp(Mood.social[entity] + (ctx.rng() - 0.5) * 0.02)
-    ModeState.gestationTimer[entity] = Math.max(0, ModeState.gestationTimer[entity] - dt)
+    const socialDrive = clamp(DNA.socialDrive[entity] ?? 0.3, 0, 1)
+    const socialBias = (socialDrive - 0.5) * 0.01
+    Mood.social[entity] = clamp(Mood.social[entity] + socialBias + (ctx.rng() - 0.5) * 0.02 * moodVolatility)
+    const gestationCost = DNA.gestationCost[entity] ?? 10
+    const gestationDecayScale = clamp(1 - (gestationCost - 10) * 0.02, 0.6, 1.4)
+    ModeState.gestationTimer[entity] = Math.max(0, ModeState.gestationTimer[entity] - dt * gestationDecayScale)
     if (ModeState.dangerTimer[entity] > 0) {
-      ModeState.dangerTimer[entity] = Math.max(0, ModeState.dangerTimer[entity] - dt)
+      const dangerDecayScale = clamp(1 - (attentionSpan - 0.5) * 0.6, 0.5, 1.5)
+      ModeState.dangerTimer[entity] = Math.max(0, ModeState.dangerTimer[entity] - dt * dangerDecayScale)
     }
     if (ModeState.sexCooldown[entity] > 0) {
-      ModeState.sexCooldown[entity] = Math.max(0, ModeState.sexCooldown[entity] - dt)
+      const fertility = clamp(DNA.fertility[entity] ?? 0.3, 0.1, 1)
+      const sexCooldownScale = clamp(0.7 + fertility, 0.6, 1.7)
+      ModeState.sexCooldown[entity] = Math.max(0, ModeState.sexCooldown[entity] - dt * sexCooldownScale)
     }
 
     if (!isMature) {
@@ -219,10 +238,11 @@ export function metabolismSystem(
       Reproduction.libido[entity] = clamp(Reproduction.libido[entity] + libidoGainRate * dt, 0, 1)
     }
 
-    if (mode === MODE.Sleep) {
-      const recovery = (DNA.sleepEfficiency[entity] ?? 0.8) * dt
+    if (mode === MODE.Sleep || mode === MODE.Recover) {
+      const recoveryScale = mode === MODE.Recover ? 0.45 : 1
+      const recovery = (DNA.sleepEfficiency[entity] ?? 0.8) * dt * recoveryScale
       Energy.sleepDebt[entity] = Math.max(0, Energy.sleepDebt[entity] - recovery)
-      Mood.fatigue[entity] = clamp(Mood.fatigue[entity] - recovery * 0.4, 0, 1)
+      Mood.fatigue[entity] = clamp(Mood.fatigue[entity] - recovery * (mode === MODE.Recover ? 0.25 : 0.4), 0, 1)
     } else {
       const debtGain = dt / Math.max(DNA.stamina[entity] ?? 1, 0.5)
       Energy.sleepDebt[entity] = Math.min(5, Energy.sleepDebt[entity] + debtGain)

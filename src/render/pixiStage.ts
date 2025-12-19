@@ -63,6 +63,7 @@ type AgentSpriteData = {
   earPlacements: { x: number; y: number; angle: number }[]
   nosePlacements: { x: number; y: number; angle: number }[]
   highlightTimeout?: number
+  lastBloodAt?: number
   active: boolean // For pooling
 }
 
@@ -83,6 +84,14 @@ type ManureSpriteData = {
   active: boolean
 }
 
+type BloodSpriteData = {
+  sprite: Sprite
+  life: number
+  maxLife: number
+  driftX: number
+  driftY: number
+}
+
 type FertilizerSpriteData = {
   sprite: Sprite
   active: boolean
@@ -97,6 +106,8 @@ const MODE_COLORS: Record<string, number> = {
   graze: 0xf59e0b,
   sleep: 0x6b7280,
   idle: 0x94a3b8,
+  digest: 0x64748b,
+  recover: 0x9ca3af,
 }
 
 const MOOD_COLORS: Record<MoodKind, number> = {
@@ -147,6 +158,10 @@ export class PixiStage {
   #manureSprites = new Map<number, ManureSpriteData>()
   #manurePool: ManureSpriteData[] = []
 
+  #bloodSprites: BloodSpriteData[] = []
+  #bloodPool: BloodSpriteData[] = []
+  #bloodClock = 0
+
   #fertilizerSprites = new Map<number, FertilizerSpriteData>()
   #fertilizerPool: FertilizerSpriteData[] = []
 
@@ -167,6 +182,7 @@ export class PixiStage {
   #glowTints: Record<'hunter' | 'prey', number> = { hunter: 0xffffff, prey: 0xffffff }
   #plantTextures: Texture[] = []
   #corpseTexture: Texture | null = null
+  #bloodTexture: Texture | null = null
   #legTexture?: Texture
   #finTexture?: Texture
   #wingTexture?: Texture
@@ -370,6 +386,15 @@ export class PixiStage {
       .fill(0xffffff)
     this.#corpseTexture = bake(corpseGraphic)
 
+    const bloodGraphic = new Graphics()
+      .circle(0, 0, 6)
+      .fill(0xffffff)
+      .circle(-5, 2, 3)
+      .fill(0xffffff)
+      .circle(5, -2, 2.5)
+      .fill(0xffffff)
+    this.#bloodTexture = bake(bloodGraphic)
+
     this.#legTexture = bake(this.#buildLegOverlayGraphic())
     this.#finTexture = bake(this.#buildFinOverlayGraphic())
     this.#wingTexture = bake(this.#buildWingOverlayGraphic())
@@ -554,6 +579,7 @@ export class PixiStage {
         entry.glow.tint = this.#glowTints[archetype]
         entry.overlay.tint = this.#modeColor(agent)
       }
+      this.#maybeSpawnBlood(agent, entry, scale)
       this.#updateLimbOverlay(entry, agent)
       this.#updateFinOverlay(entry, agent)
       this.#updateWingOverlay(entry, agent)
@@ -618,6 +644,7 @@ export class PixiStage {
       eyePlacements: [],
       earPlacements: [],
       nosePlacements: [],
+      lastBloodAt: undefined,
       active: true,
     }
     this.#configureAgentSprite(entry, archetype)
@@ -652,6 +679,7 @@ export class PixiStage {
     entry.fins.visible = !this.#lightweightVisuals
     entry.wings.clear()
     entry.wings.visible = !this.#lightweightVisuals
+    entry.lastBloodAt = undefined
   }
 
   #syncPlants(plants: PlantState[]) {
@@ -769,8 +797,13 @@ export class PixiStage {
       entry.sprite.visible = true
       entry.sprite.position.set(corpse.position.x, corpse.position.y)
       const decayRatio = corpse.maxDecay > 0 ? corpse.decay / corpse.maxDecay : 0
-      entry.sprite.alpha = clamp(0.18 + clamp(decayRatio, 0, 1) * 0.7, 0.12, 0.92)
-      entry.sprite.tint = 0x8b5a2b
+      const isFresh = corpse.stage !== 'dead'
+      const freshTime = corpse.freshTime ?? 0
+      const freshRatio = isFresh ? clamp(freshTime / Math.max(freshTime + corpse.decay, 1), 0.2, 1) : 0
+      entry.sprite.alpha = isFresh
+        ? clamp(0.45 + freshRatio * 0.45, 0.4, 0.95)
+        : clamp(0.18 + clamp(decayRatio, 0, 1) * 0.7, 0.12, 0.92)
+      entry.sprite.tint = isFresh ? 0x7f1d1d : 0x8b5a2b
       const r = Math.max(6, corpse.radius || 14)
       entry.sprite.scale.set(r / baseRadius)
     }
@@ -984,6 +1017,7 @@ export class PixiStage {
   #animate(dt: number) {
     // Only animate what is visible
     // PixiJS's visible check is fast, but we can skip logic too
+    this.#bloodClock += dt
     
     for (const entry of this.#agentSprites.values()) {
       if (!entry.container.visible) continue; // Skip off-screen logic
@@ -1036,10 +1070,68 @@ export class PixiStage {
       entry.sprite.rotation = sway
       entry.sprite.scale.y = 0.98 + Math.abs(Math.sin(entry.swayPhase * 0.7)) * 0.04
     }
+
+    this.#updateBlood(dt)
   }
 
   #randomPlantTexture() {
     return this.#plantTextures[Math.floor(Math.random() * this.#plantTextures.length)]
+  }
+
+  #maybeSpawnBlood(agent: AgentState, entry: AgentSpriteData, scale: number) {
+    if (!this.#bloodTexture) return
+    if (agent.mode !== 'fight' && agent.mode !== 'hunt') return
+    const now = this.#bloodClock
+    const last = entry.lastBloodAt ?? -Infinity
+    const cooldown = 10 + Math.random() * 12
+    if (now - last < cooldown) return
+    entry.lastBloodAt = now
+    const jitter = (Math.random() - 0.5) * 16 * clamp(scale, 0.6, 2.2)
+    const jitterY = (Math.random() - 0.5) * 16 * clamp(scale, 0.6, 2.2)
+    this.#spawnBlood({ x: agent.position.x + jitter, y: agent.position.y + jitterY }, scale)
+  }
+
+  #spawnBlood(position: Vector2, scale: number) {
+    if (!this.#bloodTexture) return
+    let entry = this.#bloodPool.pop()
+    if (!entry) {
+      const sprite = new Sprite(this.#bloodTexture)
+      sprite.anchor.set(0.5)
+      sprite.zIndex = 7
+      sprite.eventMode = 'none'
+      this.#entityLayer.addChild(sprite)
+      entry = { sprite, life: 0, maxLife: 0, driftX: 0, driftY: 0 }
+    }
+    const size = clamp(0.35 + scale * 0.18, 0.35, 1.6)
+    entry.maxLife = 28 + Math.random() * 34
+    entry.life = entry.maxLife
+    entry.driftX = (Math.random() - 0.5) * 0.15
+    entry.driftY = (Math.random() - 0.5) * 0.15
+    entry.sprite.position.set(position.x, position.y)
+    entry.sprite.scale.set(size * (0.6 + Math.random() * 0.7))
+    entry.sprite.rotation = Math.random() * Math.PI * 2
+    entry.sprite.tint = 0x7f1d1d
+    entry.sprite.alpha = 0.85
+    entry.sprite.visible = true
+    this.#bloodSprites.push(entry)
+  }
+
+  #updateBlood(dt: number) {
+    if (this.#bloodSprites.length === 0) return
+    for (let i = this.#bloodSprites.length - 1; i >= 0; i--) {
+      const entry = this.#bloodSprites[i]!
+      entry.life -= dt
+      if (entry.life <= 0) {
+        entry.sprite.visible = false
+        this.#bloodPool.push(entry)
+        this.#bloodSprites.splice(i, 1)
+        continue
+      }
+      const t = entry.life / Math.max(entry.maxLife, 1)
+      entry.sprite.alpha = clamp(t * 0.85, 0, 0.85)
+      entry.sprite.position.x += entry.driftX * dt
+      entry.sprite.position.y += entry.driftY * dt
+    }
   }
 
   #modeColor(agent: AgentState) {

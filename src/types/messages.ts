@@ -3,6 +3,11 @@ import type { ControlState, SimulationSnapshot, WorldConfig } from './sim'
 export interface TelemetryPayload {
   timings: Record<string, number>
   geneAverages: Record<string, number>
+  eatCounts: {
+    hunter: number
+    prey: number
+    scavenger: number
+  }
   fps?: number
 }
 

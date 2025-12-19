@@ -6,6 +6,8 @@ export interface MoodMachineInput {
   forageStartRatio?: number
   fatigue: number
   sleepPressure: number
+  digestionPressure?: number
+  recoveryPressure?: number
   libido: number
   threatLevel: number
   socialCohesion: number
@@ -82,10 +84,11 @@ export function resolveMood(input: MoodMachineInput): MoodDecision {
   )
   const foragePressure = hungerPressure * (0.8 + (1 - stability) * 0.4)
 
-  if (
+  const forageByRatio = input.hungerRatio < forageStartRatio
+  const forageByPressure =
     foragePressure > forageStartPressure ||
     (foragePressure > forageStartPressure * 0.6 && foragePressure > exhaustionPressure + 0.1)
-  ) {
+  if (forageByRatio || forageByPressure) {
     const target = preferForageTarget(input.preyTarget, input.plantTarget)
     const mode: AgentMode = target?.kind === 'plant' ? 'graze' : 'hunt'
     const intense = foragePressure > 0.8
@@ -107,21 +110,41 @@ export function resolveMood(input: MoodMachineInput): MoodDecision {
     }
   }
 
-  // Mating should not “steal” behaviour when the animal is already below its personal
-  // food-search threshold (Maslow: physiology before reproduction).
-  if (input.hungerRatio < forageStartRatio) {
-    // Fall through to social/exploration (patrol) rather than mate.
-  } else {
-  const libidoPressure = clamp(input.libido * (0.8 + (1 - stability) * 0.25), 0, 1)
-  const libidoThreshold = 0.62 - (1 - stability) * 0.12
-  if (libidoPressure > libidoThreshold) {
+  const digestionPressure = clamp(input.digestionPressure ?? 0, 0, 1)
+  const digestThreshold = 0.55 - (stability - 0.5) * 0.1
+  if (digestionPressure > digestThreshold) {
     return {
-      mood: 'seeking-mate',
-      tier: 'reproductive',
-      intensity: libidoPressure,
-      behaviour: { mode: 'mate' },
+      mood: 'idle',
+      tier: 'physiological',
+      intensity: digestionPressure,
+      behaviour: { mode: 'digest' },
     }
   }
+
+  const recoveryPressure = clamp(input.recoveryPressure ?? 0, 0, 1)
+  const recoveryThreshold = 0.5 - (stability - 0.5) * 0.08
+  if (recoveryPressure > recoveryThreshold) {
+    return {
+      mood: 'exhausted',
+      tier: 'physiological',
+      intensity: recoveryPressure,
+      behaviour: { mode: 'recover' },
+    }
+  }
+
+  // Mating should not “steal” behaviour when the animal is already below its personal
+  // food-search threshold (Maslow: physiology before reproduction).
+  if (input.hungerRatio >= forageStartRatio) {
+    const libidoPressure = clamp(input.libido * (0.8 + (1 - stability) * 0.25), 0, 1)
+    const libidoThreshold = 0.62 - (1 - stability) * 0.12
+    if (libidoPressure > libidoThreshold) {
+      return {
+        mood: 'seeking-mate',
+        tier: 'reproductive',
+        intensity: libidoPressure,
+        behaviour: { mode: 'mate' },
+      }
+    }
   }
 
   const herdDesire = clamp((input.cohesion ?? 0.2) * 0.6 + (input.dependency ?? 0.2) * 0.4, 0, 1)
@@ -139,10 +162,12 @@ export function resolveMood(input: MoodMachineInput): MoodDecision {
 
   const curiosityDrive = clamp(input.curiosity * (0.7 + (1 - stability) * 0.4), 0, 1)
   const wantsExplore = curiosityDrive > 0.52 || input.currentMood === 'exploring'
+  const idleDrive = clamp((1 - input.curiosity) * (0.6 + stability * 0.6), 0, 1)
+  const wantsIdle = !wantsExplore && idleDrive > 0.55
   return {
     mood: wantsExplore ? 'exploring' : 'idle',
     tier: 'growth',
-    intensity: curiosityDrive,
-    behaviour: { mode: 'patrol' },
+    intensity: wantsExplore ? curiosityDrive : idleDrive,
+    behaviour: { mode: wantsIdle ? 'idle' : 'patrol' },
   }
 }

@@ -1,4 +1,4 @@
-import { Body, Digestion, Energy } from './components'
+import { AgentMeta, Body, Digestion, Energy, ArchetypeCode } from './components'
 import type { SimulationContext } from './types'
 
 import {
@@ -34,6 +34,18 @@ export function applyFoodIntake(
   options?: { maturityYears?: number; satiationMultiplier?: number; massBuildCost?: number },
 ) {
   if (!Number.isFinite(intake) || intake <= 0) return
+
+  const eatCounts = ctx.metrics?.eatCounts
+  if (eatCounts) {
+    const archetype = AgentMeta.archetype[eaterEntity]
+    if (archetype === ArchetypeCode.Hunter) {
+      eatCounts.hunter += 1
+    } else if (archetype === ArchetypeCode.Scavenger) {
+      eatCounts.scavenger += 1
+    } else if (archetype === ArchetypeCode.Prey) {
+      eatCounts.prey += 1
+    }
+  }
 
   // Track intake for manure production. `intake` here is the actual consumed nutrient/energy payload.
   Digestion.intakeSinceManure[eaterEntity] = (Digestion.intakeSinceManure[eaterEntity] || 0) + intake

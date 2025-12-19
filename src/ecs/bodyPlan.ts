@@ -478,9 +478,10 @@ export function prepareDNA(dna: DNA): DNA {
 
 export function enforceDiet(dna: DNA): DNA {
   if (dna.archetype === 'hunter') {
+    const cannibalism = clamp(dna.cannibalism ?? 0, 0, 1) >= 0.5
     return {
       ...dna,
-      preferredFood: ['prey'],
+      preferredFood: cannibalism ? ['prey', 'scavenger', 'hunter'] : ['prey', 'scavenger'],
       scavengerAffinity: 0,
     }
   }

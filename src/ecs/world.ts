@@ -1,6 +1,6 @@
 import { createWorld, removeEntity } from 'bitecs'
 
-import { Body, DNA, Energy, Fertilizer, Obstacle, Position } from './components'
+import { Body, DNA, Energy, Obstacle, Position } from './components'
 import {
   createRegistry,
   serializeAgentEntity,
@@ -18,6 +18,7 @@ import {
 import type { SimulationContext } from './types'
 import { perceptionSystem } from './systems/perceptionSystem'
 import { commitIntentSystem } from './systems/commitIntentSystem'
+import { grazingSystem } from './systems/grazingSystem'
 import { lifecycleSystem } from './systems/lifecycleSystem'
 import { movementSystem } from './systems/movementSystem'
 import { interactionSystem } from './systems/interactionSystem'
@@ -61,7 +62,7 @@ import {
   effectiveFatCapacity,
   maxMassForLevel,
 } from '@/ecs/lifecycle'
-import { spawnPlantNearPosition } from '@/ecs/fertilization'
+import { spawnPlantOnFertilizer } from '@/ecs/fertilization'
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now())
 
@@ -128,7 +129,12 @@ function createContext(config: WorldConfig): SimulationContext {
     nextManureId: 1,
     nextFertilizerId: 1,
     nextRockId: 1,
-    metrics: { births: 0, deaths: 0, mutations: 0 },
+    metrics: {
+      births: 0,
+      deaths: 0,
+      mutations: 0,
+      eatCounts: { hunter: 0, prey: 0, scavenger: 0 },
+    },
     lootSites: [],
   }
 }
@@ -228,6 +234,7 @@ export function createWorldFromSnapshot(snapshot: SimulationSnapshot): Simulatio
     births: snapshot.stats.totalBirths,
     deaths: snapshot.stats.totalDeaths,
     mutations: snapshot.stats.mutations,
+    eatCounts: { hunter: 0, prey: 0, scavenger: 0 },
   }
 
   return ctx
@@ -275,7 +282,8 @@ function spawnInitialPopulation(ctx: SimulationContext) {
     }
   })
 
-  for (let i = 0; i < ctx.config.maxPlants; i++) {
+  const remainingPlants = spawnPlantsFromFertilizer(ctx, ctx.config.maxPlants)
+  for (let i = 0; i < remainingPlants; i++) {
     spawnPlant(ctx)
   }
 }
@@ -293,6 +301,7 @@ export function stepWorld(ctx: SimulationContext, dtMs: number, controls: Contro
 
   measure('perception', () => perceptionSystem(ctx, controls))
   measure('intent', () => commitIntentSystem(ctx))
+  measure('grazing', () => grazingSystem(ctx, controls.curiosityBias ?? 0))
   measure('flocking', () => flockingSystem(ctx, dt, controls.flockingStrength ?? 1))
   measure('circadian', () => circadianSystem(ctx, dt))
   measure('lifecycle', () => lifecycleSystem(ctx))
@@ -421,8 +430,10 @@ function spawnAgent(
     },
     velocity: { x: 0, y: 0 },
     heading: randRange(ctx.rng, 0, Math.PI * 2),
-    energy: dna.hungerThreshold * 12,
-    fatStore: fatCapacity * 0.8,
+    // Seeded populations previously spawned with extremely high reserves, making hunger-driven behaviours
+    // (grazing/hunting) very rare in short runs.
+    energy: dna.hungerThreshold * (countBirth ? 2.5 : 3),
+    fatStore: fatCapacity * (countBirth ? 0.3 : 0.4),
     age: ageYears,
     mode: 'patrol',
     mood: { stress: 0.25, focus: 0.5, social: 0.5, fatigue: 0, kind: 'idle', tier: 'growth', intensity: 0 },
@@ -539,41 +550,37 @@ function handleRainyGrowth(ctx: SimulationContext, controls: ControlState, dtMs:
   while (ctx.nextRainMs <= 0) {
     const plantDeficit = controls.maxPlants - ctx.plants.size
     if (plantDeficit > 0) {
-      // Spawn new plants prioritizing fertilizer-rich soil first.
-      let remaining = plantDeficit
-      if (ctx.fertilizers.size > 0) {
-        const fertilizerIds = Array.from(ctx.fertilizers.keys())
-        for (let i = 0; i < plantDeficit; i++) {
-          if (remaining <= 0) break
-          // Prefer fertilizer patches that still have nutrients.
-          let picked: number | null = null
-          for (let attempts = 0; attempts < 12; attempts++) {
-            const candidateId = fertilizerIds[Math.floor(ctx.rng() * fertilizerIds.length)]
-            const candidateEntity = ctx.fertilizers.get(candidateId)
-            if (candidateEntity === undefined) continue
-            if ((Fertilizer.nutrients[candidateEntity] || 0) <= 0.1) continue
-            picked = candidateId
-            break
-          }
-          if (picked === null) break
-          const fertEntity = ctx.fertilizers.get(picked)
-          if (fertEntity === undefined) break
-          spawnPlantNearPosition(
-            ctx,
-            { x: Position.x[fertEntity], y: Position.y[fertEntity] },
-            Math.max(18, Fertilizer.radius[fertEntity] || 70),
-          )
-          remaining--
-        }
-      }
-
-      // Any remaining spawn budget is distributed across the rest of the world.
+      // Spawn new plants on fertilizer patches first, then spread the rest across the map.
+      const remaining = spawnPlantsFromFertilizer(ctx, plantDeficit)
       for (let i = 0; i < remaining; i++) {
         spawnPlant(ctx)
       }
     }
     ctx.nextRainMs += rainIntervalMs(ctx)
   }
+}
+
+function spawnPlantsFromFertilizer(ctx: SimulationContext, count: number): number {
+  if (count <= 0) return 0
+  if (ctx.fertilizers.size === 0) return count
+
+  const fertilizerIds = Array.from(ctx.fertilizers.keys())
+  // Shuffle for fair distribution.
+  for (let i = fertilizerIds.length - 1; i > 0; i--) {
+    const j = Math.floor(ctx.rng() * (i + 1))
+    ;[fertilizerIds[i], fertilizerIds[j]] = [fertilizerIds[j], fertilizerIds[i]]
+  }
+
+  let remaining = count
+  for (const fertilizerId of fertilizerIds) {
+    if (remaining <= 0) break
+    const entity = ctx.fertilizers.get(fertilizerId)
+    if (entity === undefined) continue
+    if (spawnPlantOnFertilizer(ctx, fertilizerId) !== null) {
+      remaining--
+    }
+  }
+  return remaining
 }
 
 function removePlant(ctx: SimulationContext, id: number) {
@@ -627,14 +634,19 @@ function killAgentToCorpse(ctx: SimulationContext, id: number): number | null {
   const nutrients = Math.max(40, baseBiomass + storedReserves)
 
   // Decomposition: scale with size; larger corpses linger longer.
-  const maxDecay = clamp(120 + bodyMass * 18, 90, 1800) // seconds
+  const totalDecay = clamp(120 + bodyMass * 18, 90, 1800) // seconds
+  const freshTime = clamp(40 + bodyMass * 6, 30, totalDecay * 0.6)
+  const deadDecay = Math.max(30, totalDecay - freshTime)
   const corpseId = ctx.nextCorpseId++
   const corpseEntity = spawnCorpseEntity(ctx.registry, {
     position: { x: Position.x[entity], y: Position.y[entity] },
     radius,
     nutrients,
-    decay: maxDecay,
-    maxDecay,
+    archetype: genome?.archetype ?? 'prey',
+    stage: 'fresh',
+    freshTime,
+    decay: deadDecay,
+    maxDecay: deadDecay,
   })
 
   ctx.corpses.set(corpseId, corpseEntity)
@@ -778,9 +790,10 @@ function buildDNA(ctx: SimulationContext, archetype: Archetype, biome: Biome = '
     fertility: randRange(ctx.rng, 0.25, 0.8),
     gestationCost: randRange(ctx.rng, 5, 20),
     moodStability: randRange(ctx.rng, 0.2, 0.9),
+    cannibalism: randRange(ctx.rng, 0, 1),
     maturityAgeYears,
     // Scavengers only eat dead meat (corpse entities), not plants or live animals.
-    preferredFood: archetype === 'hunter' ? ['prey'] : archetype === 'scavenger' ? [] : ['plant'],
+    preferredFood: archetype === 'hunter' ? ['prey', 'scavenger'] : archetype === 'scavenger' ? [] : ['plant'],
     stamina: randRange(ctx.rng, 0.7, 1.4),
     circadianBias:
       archetype === 'hunter' ? randRange(ctx.rng, 0.2, 0.8) : randRange(ctx.rng, -0.8, 0.4),

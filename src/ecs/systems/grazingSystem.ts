@@ -8,18 +8,23 @@ const MODE = {
   Patrol: 6,
   Sleep: 1,
   Flee: 4,
+  Mate: 5,
+  Fight: 7,
+  Idle: 8,
+  Digest: 9,
+  Recover: 10,
 }
 
 export function grazingSystem(ctx: SimulationContext, curiosityBias = 0) {
   ctx.agents.forEach((entity, id) => {
     const mode = ModeState.mode[entity]
-    if (mode === MODE.Sleep || mode === MODE.Flee) return
+    if (mode === MODE.Sleep || mode === MODE.Flee || mode === MODE.Mate || mode === MODE.Fight) return
+    if (mode !== MODE.Graze && mode !== MODE.Patrol && mode !== MODE.Idle) return
     const genome = ctx.genomes.get(id)
     const archetype = AgentMeta.archetype[entity]
     const curiosity = (DNA.curiosity[entity] ?? 0.3) + curiosityBias
     const eatsPlants =
-      genome?.preferredFood?.includes('plant') ??
-      (archetype === ArchetypeCode.Prey || (DNA.scavengerAffinity[entity] ?? 0) > 0.25)
+      genome?.preferredFood?.includes('plant') ?? archetype === ArchetypeCode.Prey
     if (!eatsPlants) return
 
     const hungerThreshold = genome?.hungerThreshold ?? Energy.metabolism[entity] * 8
@@ -36,6 +41,7 @@ export function grazingSystem(ctx: SimulationContext, curiosityBias = 0) {
     buckets.forEach((bucket) => {
       const plantEntity = ctx.plants.get(bucket.id)
       if (plantEntity === undefined) return
+      if ((PlantStats.biomass[plantEntity] || 0) <= 0.12) return
       const dist = Math.max(1, Math.sqrt(distanceSquared(me, { x: Position.x[plantEntity], y: Position.y[plantEntity] })))
       const biomass = PlantStats.biomass[plantEntity]
       const nutrients = PlantStats.nutrientDensity[plantEntity]
