@@ -336,7 +336,7 @@ $: {
     saveName = ''
     selectedFamily = ''
     agentQuery = ''
-    updateControls({ maxAgents: 1080, maxPlants: 225 })
+    updateControls({ maxAgents: 2160, maxPlants: 450 })
   }
 
   const handleZoomIn = () => {

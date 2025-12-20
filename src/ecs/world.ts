@@ -272,12 +272,8 @@ function spawnInitialPopulation(ctx: SimulationContext) {
   POPULATION_SLOTS.forEach(({ archetype, biome }, idx) => {
     const count = perCluster + (idx < remainder ? 1 : 0)
     const clusterCenter = clusterCenters[idx]
-    const colorPool = archetype === 'hunter' ? HUNTER_COLORS : archetype === 'scavenger' ? SCAVENGER_COLORS : PREY_COLORS
     for (let i = 0; i < count; i++) {
-      const dna = {
-        ...buildDNA(ctx, archetype, biome),
-        familyColor: colorPool[(idx + i) % colorPool.length],
-      }
+      const dna = buildDNA(ctx, archetype, biome)
       spawnAgent(ctx, archetype, dna, jitter(ctx.rng, clusterCenter, radius * 0.8), 0, undefined, false)
     }
   })
@@ -411,8 +407,9 @@ function spawnAgent(
   if (!countBirth) {
     // Seeded worlds should not start as all newborns; pick an age that can support the chosen starting mass.
     let requiredLevel = 0
-    for (let level = 0; level <= DEFAULT_MATURITY_YEARS + 6; level++) {
-      if (maxMassForLevel(dna.bodyMass, level) >= mass) {
+    const maturityYears = Math.max(1, Math.floor(dna.maturityAgeYears ?? DEFAULT_MATURITY_YEARS))
+    for (let level = 0; level <= maturityYears + 6; level++) {
+      if (maxMassForLevel(dna.bodyMass, level, { maturityYears }) >= mass) {
         requiredLevel = level
         break
       }
@@ -420,6 +417,8 @@ function spawnAgent(
     ageYears = randRange(ctx.rng, requiredLevel, requiredLevel + 0.95)
   }
   const fatCapacity = effectiveFatCapacity(dna, mass)
+  const birthEnergyMultiplier = clamp(dna.initialEnergyBirthMultiplier ?? 2.5, 1, 5)
+  const seedEnergyMultiplier = clamp(dna.initialEnergySeedMultiplier ?? 3, 1, 6)
   const state: AgentState = {
     id,
     dna,
@@ -432,7 +431,7 @@ function spawnAgent(
     heading: randRange(ctx.rng, 0, Math.PI * 2),
     // Seeded populations previously spawned with extremely high reserves, making hunger-driven behaviours
     // (grazing/hunting) very rare in short runs.
-    energy: dna.hungerThreshold * (countBirth ? 2.5 : 3),
+    energy: dna.hungerThreshold * (countBirth ? birthEnergyMultiplier : seedEnergyMultiplier),
     fatStore: fatCapacity * (countBirth ? 0.3 : 0.4),
     age: ageYears,
     mode: 'patrol',
@@ -507,6 +506,7 @@ function enforcePopulationTargets(ctx: SimulationContext, controls: ControlState
   const slots = POPULATION_SLOTS
   const perSlot = Math.floor(controls.maxAgents / Math.max(1, slots.length))
   const remainder = controls.maxAgents % Math.max(1, slots.length)
+  const emergencyRepopulate = ctx.agents.size <= Math.floor(controls.maxAgents * 0.1)
 
   const counts = new Map<string, number>()
   slots.forEach((slot) => {
@@ -519,23 +519,40 @@ function enforcePopulationTargets(ctx: SimulationContext, controls: ControlState
     counts.set(key, (counts.get(key) ?? 0) + 1)
   })
 
-  // Do not replace individuals as they die.
-  // Only when a whole "sort" (biome + archetype) goes extinct, spawn a full new batch for that sort.
-  for (let i = 0; i < slots.length; i++) {
-    if (availableSlots <= 0) break
-    const slot = slots[i]
-    const key = `${slot.biome}:${slot.archetype}`
-    const current = counts.get(key) ?? 0
-    if (current > 0) continue
-
-    const desired = perSlot + (i < remainder ? 1 : 0)
-    const toSpawn = Math.min(Math.max(1, desired), availableSlots)
-    for (let j = 0; j < toSpawn; j++) {
-      const dna = buildDNA(ctx, slot.archetype, slot.biome)
-      const entity = spawnAgent(ctx, slot.archetype, dna, undefined, 0, undefined, false)
-      DNA.mutationRate[entity] = controls.mutationRate
+  if (emergencyRepopulate) {
+    for (let i = 0; i < slots.length; i++) {
+      if (availableSlots <= 0) break
+      const slot = slots[i]
+      const key = `${slot.biome}:${slot.archetype}`
+      const current = counts.get(key) ?? 0
+      const desired = perSlot + (i < remainder ? 1 : 0)
+      const toSpawn = Math.min(Math.max(0, desired - current), availableSlots)
+      for (let j = 0; j < toSpawn; j++) {
+        const dna = buildDNA(ctx, slot.archetype, slot.biome)
+        const entity = spawnAgent(ctx, slot.archetype, dna, undefined, 0, undefined, false)
+        DNA.mutationRate[entity] = controls.mutationRate
+      }
+      availableSlots -= toSpawn
     }
-    availableSlots -= toSpawn
+  } else {
+    // Do not replace individuals as they die.
+    // When a "sort" (biome + archetype) drops below 10% of its target, refill it back to target.
+    for (let i = 0; i < slots.length; i++) {
+      if (availableSlots <= 0) break
+      const slot = slots[i]
+      const key = `${slot.biome}:${slot.archetype}`
+      const current = counts.get(key) ?? 0
+      const desired = perSlot + (i < remainder ? 1 : 0)
+      const threshold = Math.floor(desired * 0.1)
+      if (current > threshold) continue
+      const toSpawn = Math.min(Math.max(0, desired - current), availableSlots)
+      for (let j = 0; j < toSpawn; j++) {
+        const dna = buildDNA(ctx, slot.archetype, slot.biome)
+        const entity = spawnAgent(ctx, slot.archetype, dna, undefined, 0, undefined, false)
+        DNA.mutationRate[entity] = controls.mutationRate
+      }
+      availableSlots -= toSpawn
+    }
   }
 
   handleRainyGrowth(ctx, controls, dtMs)
@@ -635,7 +652,7 @@ function killAgentToCorpse(ctx: SimulationContext, id: number): number | null {
 
   // Decomposition: scale with size; larger corpses linger longer.
   const totalDecay = clamp(120 + bodyMass * 18, 90, 1800) // seconds
-  const freshTime = clamp(40 + bodyMass * 6, 30, totalDecay * 0.6)
+  const freshTime = clamp(80 + bodyMass * 10, 60, totalDecay * 0.8)
   const deadDecay = Math.max(30, totalDecay - freshTime)
   const corpseId = ctx.nextCorpseId++
   const corpseEntity = spawnCorpseEntity(ctx.registry, {
@@ -705,6 +722,16 @@ function buildDNA(ctx: SimulationContext, archetype: Archetype, biome: Biome = '
       : archetype === 'scavenger'
         ? randRange(ctx.rng, 55, 85)
         : randRange(ctx.rng, 40, 70)
+  const hungerRestMultiplier = randRange(ctx.rng, 1.3, 1.7)
+  const hungerSurvivalBufferScale = randRange(ctx.rng, 0.05, 0.13)
+  const growthReserveBase = randRange(ctx.rng, 0.85, 1.05)
+  const growthReserveGreedScale = randRange(ctx.rng, 0.25, 0.6)
+  const satiationBase = randRange(ctx.rng, 0.85, 1.15)
+  const satiationGreedScale = randRange(ctx.rng, 1, 1.6)
+  const patrolThresholdMinScale = randRange(ctx.rng, 0.15, 0.3)
+  const patrolThresholdMaxScale = randRange(ctx.rng, 1, 1.4)
+  const initialEnergyBirthMultiplier = randRange(ctx.rng, 2.2, 2.8)
+  const initialEnergySeedMultiplier = randRange(ctx.rng, 2.8, 3.4)
   const forageStartRatio =
     archetype === 'hunter'
       ? randRange(ctx.rng, 0.55, 0.9)
@@ -717,6 +744,207 @@ function buildDNA(ctx: SimulationContext, archetype: Archetype, biome: Biome = '
       : archetype === 'scavenger'
         ? randRange(ctx.rng, 0.45, 0.85)
         : randRange(ctx.rng, 0.35, 0.8)
+  const foragePressureBase = randRange(ctx.rng, 0.6, 1)
+  const foragePressureVolatility = randRange(ctx.rng, 0.2, 0.6)
+  const greedForageThreshold = randRange(ctx.rng, 0.45, 0.7)
+  const greedForageWeight = randRange(ctx.rng, 0.3, 0.7)
+  const greedForagePressureThreshold = randRange(ctx.rng, 0.4, 0.7)
+  const foragePressureSoftGate = randRange(ctx.rng, 0.5, 0.75)
+  const foragePressureExhaustionBuffer = randRange(ctx.rng, 0.05, 0.17)
+  const sleepPressureWeight = randRange(ctx.rng, 0.7, 1.05)
+  const exhaustionPressureBase = randRange(ctx.rng, 1, 1.15)
+  const exhaustionPressureStability = randRange(ctx.rng, 0.03, 0.11)
+  const forageIntensityThreshold = randRange(ctx.rng, 0.7, 0.95)
+  const sleepThresholdBase = randRange(ctx.rng, 0.45, 0.65)
+  const sleepThresholdStability = randRange(ctx.rng, 0.05, 0.17)
+  const sleepDebtMax = randRange(ctx.rng, 4, 7)
+  const sleepDebtGainScale = randRange(ctx.rng, 0.6, 1.2)
+  const sleepDebtStaminaFloor = randRange(ctx.rng, 0.4, 0.7)
+  const sleepEfficiencyBaseline = randRange(ctx.rng, 0.7, 0.9)
+  const sleepEfficiencyFactorBase = randRange(ctx.rng, 1, 1.3)
+  const sleepEfficiencyEffectScale = randRange(ctx.rng, 0.3, 0.7)
+  const sleepEfficiencyFactorMin = randRange(ctx.rng, 0.5, 0.7)
+  const sleepEfficiencyFactorMax = randRange(ctx.rng, 1.2, 1.6)
+  const sleepPressureRecoveryWeight = randRange(ctx.rng, 0.2, 0.5)
+  const sleepRecoveryScaleSleep = randRange(ctx.rng, 0.8, 1.2)
+  const sleepRecoveryScaleRecover = randRange(ctx.rng, 0.3, 0.6)
+  const sleepFatigueRecoveryScaleSleep = randRange(ctx.rng, 0.3, 0.5)
+  const sleepFatigueRecoveryScaleRecover = randRange(ctx.rng, 0.15, 0.35)
+  const sleepFatigueGainScale = randRange(ctx.rng, 0.15, 0.35)
+  const sleepStaminaFactorBase = randRange(ctx.rng, 1.05, 1.3)
+  const sleepStaminaFactorOffset = randRange(ctx.rng, 0.9, 1.1)
+  const sleepStaminaFactorScale = randRange(ctx.rng, 0.4, 0.8)
+  const sleepStaminaFactorMin = randRange(ctx.rng, 0.4, 0.7)
+  const sleepStaminaFactorMax = randRange(ctx.rng, 1.3, 1.7)
+  const sleepCircadianRestThreshold = randRange(ctx.rng, 0.3, 0.4)
+  const sleepCircadianStressScale = randRange(ctx.rng, 0.15, 0.35)
+  const sleepCircadianPushScale = randRange(ctx.rng, 0.4, 0.7)
+  const sleepCircadianPreferenceMidpoint = randRange(ctx.rng, 0.45, 0.55)
+  const digestionThresholdBase = randRange(ctx.rng, 0.45, 0.65)
+  const digestionThresholdStability = randRange(ctx.rng, 0.05, 0.17)
+  const recoveryThresholdBase = randRange(ctx.rng, 0.42, 0.6)
+  const recoveryThresholdStability = randRange(ctx.rng, 0.04, 0.16)
+  const greedHungerOffset = randRange(ctx.rng, 0.2, 0.5)
+  const plantHungerBoostThreshold = randRange(ctx.rng, 0.45, 0.7)
+  const plantHungerBoost = randRange(ctx.rng, 1.05, 1.4)
+  const keepEatingMultiplier = randRange(ctx.rng, 1.05, 1.4)
+  const grazeBiteBase = randRange(ctx.rng, 0.25, 0.6)
+  const grazeBiteGreedScale = randRange(ctx.rng, 0.6, 1.4)
+  const grazeBiteMin = randRange(ctx.rng, 0.15, 0.3)
+  const grazeBiteMax = randRange(ctx.rng, 1, 1.8)
+  const grazeMinBiomass = randRange(ctx.rng, 0, 0.04)
+  const grazeRemoveBiomass = randRange(ctx.rng, 0.08, 0.2)
+  const grazeTargetMinBiomass = randRange(ctx.rng, 0.08, 0.22)
+  const grazeMoistureLoss = randRange(ctx.rng, 0.2, 0.5)
+  const grazeEnergyMultiplier = randRange(ctx.rng, 80, 180)
+  const grazeHungerBase = randRange(ctx.rng, 0.9, 1.3)
+  const grazeHungerCuriosityScale = randRange(ctx.rng, 0.2, 0.8)
+  const grazeCuriosityForageThreshold = randRange(ctx.rng, 0.35, 0.75)
+  const grazeSearchRadiusBase = randRange(ctx.rng, 60, 120)
+  const grazeSearchRadiusCuriosityScale = randRange(ctx.rng, 140, 300)
+  const grazeScoreBiomassWeight = randRange(ctx.rng, 0.5, 1.1)
+  const grazeScoreNutrientWeight = randRange(ctx.rng, 0.2, 0.7)
+  const grazeDistanceFloor = randRange(ctx.rng, 0.6, 1.6)
+  const grazeHungerRatioThreshold = randRange(ctx.rng, 0.7, 1.1)
+  const grazeHungerRatioNoPreyThreshold = randRange(ctx.rng, 0.9, 1.3)
+  const grazeTargetWeightBase = randRange(ctx.rng, 0.6, 1.4)
+  const grazeTargetFatCapacityWeight = randRange(ctx.rng, 0.12, 0.35)
+  const grazeTargetHungerBoostBase = randRange(ctx.rng, 0.8, 1.2)
+  const huntPreyHungerRatioThreshold = randRange(ctx.rng, 0.9, 1.3)
+  const huntTargetDistanceFloor = randRange(ctx.rng, 0.6, 1.6)
+  const huntTargetFocusBase = randRange(ctx.rng, 0.5, 0.8)
+  const huntTargetFocusScale = randRange(ctx.rng, 0.25, 0.55)
+  const huntTargetAggressionBase = randRange(ctx.rng, 0.9, 1.2)
+  const huntTargetAggressionScale = randRange(ctx.rng, 0.2, 0.6)
+  const huntTargetAwarenessBase = randRange(ctx.rng, 0, 0.2)
+  const huntTargetAwarenessScale = randRange(ctx.rng, 0.8, 1.2)
+  const huntPreySizeBandScale = randRange(ctx.rng, 0.65, 1.05)
+  const huntPreySizeBandOffset = randRange(ctx.rng, 0.08, 0.22)
+  const huntPreySizeBandMin = randRange(ctx.rng, 0.12, 0.28)
+  const huntPreySizeBandMax = randRange(ctx.rng, 1.1, 1.6)
+  const huntPreySizeBiasBase = randRange(ctx.rng, 0.9, 1.1)
+  const huntPreySizeBiasMin = randRange(ctx.rng, 0.03, 0.08)
+  const huntPreySizeBiasMax = randRange(ctx.rng, 1.05, 1.25)
+  const huntPreySizeOverageBase = randRange(ctx.rng, 0.9, 1.1)
+  const huntPreySizeOverageThreshold = randRange(ctx.rng, 0.9, 1.1)
+  const huntPreySizeOverageMin = randRange(ctx.rng, 0.03, 0.08)
+  const huntPreySizeOverageMax = randRange(ctx.rng, 0.9, 1.1)
+  const huntStickinessLingerBase = randRange(ctx.rng, 0.9, 1.1)
+  const huntStickinessLingerScale = randRange(ctx.rng, 0.55, 0.95)
+  const huntStickinessAttentionBase = randRange(ctx.rng, 0.9, 1.1)
+  const huntStickinessAttentionScale = randRange(ctx.rng, 0.3, 0.6)
+  const huntCarrionHungerRatioThreshold = randRange(ctx.rng, 0.7, 1)
+  const huntCarrionNutrientsMin = randRange(ctx.rng, 0, 0.18)
+  const huntCarrionDistanceFloor = randRange(ctx.rng, 0.6, 1.6)
+  const huntCarrionFocusBase = randRange(ctx.rng, 0.5, 0.8)
+  const huntCarrionFocusScale = randRange(ctx.rng, 0.2, 0.5)
+  const huntCarrionHungerBase = randRange(ctx.rng, 0.75, 1)
+  const huntCarrionHungerScale = randRange(ctx.rng, 0.9, 1.6)
+  const huntCarrionAffinityBase = randRange(ctx.rng, 0.75, 1)
+  const huntCarrionAffinityScale = randRange(ctx.rng, 0.4, 0.9)
+  const huntCarrionNutrientBase = randRange(ctx.rng, 0.6, 0.9)
+  const huntCarrionNutrientScale = randRange(ctx.rng, 0.7, 1.2)
+  const huntCarrionNutrientNorm = randRange(ctx.rng, 280, 520)
+  const huntCarrionNutrientClampMax = randRange(ctx.rng, 1.1, 1.7)
+  const huntCarrionPreferWeight = randRange(ctx.rng, 0.8, 1.05)
+  const huntCorpseReachScale = randRange(ctx.rng, 0.25, 0.5)
+  const huntCorpseReachMin = randRange(ctx.rng, 0, 8)
+  const huntCorpseReachMax = randRange(ctx.rng, 90, 150)
+  const fightInitiativeAggressionWeight = randRange(ctx.rng, 0.45, 0.7)
+  const fightInitiativeSizeWeight = randRange(ctx.rng, 0.45, 0.7)
+  const fightInitiativeRandomWeight = randRange(ctx.rng, 0.18, 0.32)
+  const fightInitiativeBiasWeight = randRange(ctx.rng, 0.35, 0.65)
+  const fightExchangeCount = randRange(ctx.rng, 3, 6)
+  const fightLeverageExponent = randRange(ctx.rng, 3.2, 4.8)
+  const fightVariabilityBase = randRange(ctx.rng, 0.78, 0.95)
+  const fightVariabilityScale = randRange(ctx.rng, 0.22, 0.45)
+  const fightBaseDamage = randRange(ctx.rng, 8, 15)
+  const fightDamageCap = randRange(ctx.rng, 170, 260)
+  const scavengeBiteBase = randRange(ctx.rng, 10, 18)
+  const scavengeBiteMassScale = randRange(ctx.rng, 4, 8)
+  const scavengeBiteGreedBase = randRange(ctx.rng, 0.45, 0.65)
+  const scavengeBiteMin = randRange(ctx.rng, 6, 12)
+  const scavengeBiteMax = randRange(ctx.rng, 140, 240)
+  const scavengeMinNutrients = randRange(ctx.rng, 0, 0.18)
+  const fleeFearBiasFearWeight = randRange(ctx.rng, 0.5, 0.9)
+  const fleeFearBiasCowardiceWeight = randRange(ctx.rng, 0.3, 0.7)
+  const fleeSurvivalThreatBase = randRange(ctx.rng, 0.5, 0.9)
+  const fleeSurvivalThreatFearScale = randRange(ctx.rng, 0.4, 1)
+  const fleeSurvivalStabilityBase = randRange(ctx.rng, 0.9, 1.2)
+  const fleeSurvivalStabilityScale = randRange(ctx.rng, 0.1, 0.35)
+  const fleeSurvivalStressWeight = randRange(ctx.rng, 0, 0.25)
+  const fleeSurvivalThresholdBase = randRange(ctx.rng, 0.35, 0.55)
+  const fleeSurvivalThresholdStabilityScale = randRange(ctx.rng, 0.05, 0.2)
+  const fleeFightDriveAggressionWeight = randRange(ctx.rng, 0.5, 0.9)
+  const fleeFightDrivePersistenceWeight = randRange(ctx.rng, 0.2, 0.6)
+  const fleeBraveFearOffset = randRange(ctx.rng, 0.1, 0.25)
+  const fleeBraveThreatThreshold = randRange(ctx.rng, 0.35, 0.55)
+  const fleeEscapeDurationMin = randRange(ctx.rng, 0.4, 1)
+  const fleeEscapeDurationMax = randRange(ctx.rng, 8, 14)
+  const fleeEscapeTendencyMin = randRange(ctx.rng, 0.01, 0.06)
+  const fleeEscapeTendencyMax = randRange(ctx.rng, 1.4, 2.4)
+  const fleeSizeRatioOffset = randRange(ctx.rng, 0.8, 1.2)
+  const fleeSizeDeltaMin = randRange(ctx.rng, -1, -0.6)
+  const fleeSizeDeltaMax = randRange(ctx.rng, 2, 3.5)
+  const fleeSizeMultiplierBase = randRange(ctx.rng, 0.9, 1.3)
+  const fleeSizeMultiplierMin = randRange(ctx.rng, 0.03, 0.11)
+  const fleeSizeMultiplierMax = randRange(ctx.rng, 2.2, 3.4)
+  const fleePredatorScaleOffset = randRange(ctx.rng, 0.5, 0.7)
+  const fleePredatorScaleRange = randRange(ctx.rng, 0.5, 0.7)
+  const fleeThreatProximityBase = randRange(ctx.rng, 0.9, 1.1)
+  const fleeThreatDistanceFloor = randRange(ctx.rng, 0.6, 1.2)
+  const fleeThreatProximityWeight = randRange(ctx.rng, 0.8, 1.4)
+  const fleeThreatAwarenessWeight = randRange(ctx.rng, 0.8, 1.4)
+  const fleeThreatCowardiceWeight = randRange(ctx.rng, 0.8, 1.4)
+  const fleeThreatScoreMax = randRange(ctx.rng, 4, 6.5)
+  const fleeCowardiceClampMax = randRange(ctx.rng, 1.4, 2.2)
+  const fleeSpeedFloor = randRange(ctx.rng, 0.6, 1.2)
+  const fleeTriggerAwarenessWeight = randRange(ctx.rng, 0.8, 1.3)
+  const fleeTriggerFearWeight = randRange(ctx.rng, 0.8, 1.3)
+  const fleeTriggerCourageWeight = randRange(ctx.rng, 0.8, 1.3)
+  const fleeTriggerNormalization = randRange(ctx.rng, 2.4, 3.4)
+  const fleeTriggerClampMin = randRange(ctx.rng, 0.05, 0.15)
+  const fleeTriggerClampMax = randRange(ctx.rng, 1.4, 2.2)
+  const fleeDangerTimerMin = randRange(ctx.rng, 0.9, 1.7)
+  const fleeDangerHoldIntensityOffset = randRange(ctx.rng, 0.35, 0.65)
+  const fleeDangerHoldIntensityMin = randRange(ctx.rng, 0.35, 0.65)
+  const fleeDangerHoldIntensityMax = randRange(ctx.rng, 1.6, 2.4)
+  const fleeDangerIntensityBase = randRange(ctx.rng, 0.35, 0.65)
+  const fleeDangerDecayStep = randRange(ctx.rng, 0.03, 0.07)
+  const fleeDangerDecayBase = randRange(ctx.rng, 0.9, 1.2)
+  const fleeDangerDecayAttentionOffset = randRange(ctx.rng, 0.35, 0.65)
+  const fleeDangerDecayAttentionScale = randRange(ctx.rng, 0.4, 0.8)
+  const fleeDangerDecayMin = randRange(ctx.rng, 0.4, 0.7)
+  const fleeDangerDecayMax = randRange(ctx.rng, 1.2, 1.8)
+  const fleeSpeedBoostBase = randRange(ctx.rng, 1, 1.5)
+  const fleeSpeedBoostStaminaScale = randRange(ctx.rng, 0.1, 0.3)
+  const libidoPressureBase = randRange(ctx.rng, 0.85, 1.45)
+  const libidoPressureStabilityWeight = randRange(ctx.rng, 0.05, 0.7)
+  const mateSearchLibidoRatioThreshold = randRange(ctx.rng, 0.8, 1.15)
+  const mateSearchTurnJitterScale = randRange(ctx.rng, 1.8, 3.2)
+  const mateSearchTurnChanceBase = randRange(ctx.rng, 0.08, 0.22)
+  const mateSearchTurnChanceCuriosityScale = randRange(ctx.rng, 0.1, 0.4)
+  const mateCooldownDuration = randRange(ctx.rng, 3, 7)
+  const mateCooldownScaleBase = randRange(ctx.rng, 0.6, 1.2)
+  const mateCooldownFertilityScale = randRange(ctx.rng, 0.3, 0.9)
+  const mateCooldownScaleMin = randRange(ctx.rng, 0.5, 0.8)
+  const mateCooldownScaleMax = randRange(ctx.rng, 1.4, 2.2)
+  const mateEnergyCostScale = randRange(ctx.rng, 1.1, 1.7)
+  const mateGestationBase = randRange(ctx.rng, 4, 8)
+  const mateGestationScale = randRange(ctx.rng, 0.4, 0.8)
+  const patrolHerdCohesionWeight = randRange(ctx.rng, 0.4, 0.8)
+  const patrolHerdDependencyWeight = randRange(ctx.rng, 0.2, 0.8)
+  const patrolSocialPressureBase = randRange(ctx.rng, 0.9, 1.3)
+  const patrolSocialPressureStabilityWeight = randRange(ctx.rng, 0.05, 0.2)
+  const patrolSocialThresholdBase = randRange(ctx.rng, 0.4, 0.6)
+  const patrolSocialThresholdStabilityWeight = randRange(ctx.rng, 0.04, 0.12)
+  const patrolSpeedMultiplier = randRange(ctx.rng, 0.9, 1.2)
+  const curiosityDriveBase = randRange(ctx.rng, 0.6, 1.3)
+  const curiosityDriveStabilityWeight = randRange(ctx.rng, 0.1, 0.7)
+  const exploreThreshold = randRange(ctx.rng, 0.4, 0.8)
+  const idleDriveBase = randRange(ctx.rng, 0.5, 1.2)
+  const idleDriveStabilityWeight = randRange(ctx.rng, 0.1, 0.8)
+  const idleThreshold = randRange(ctx.rng, 0.4, 0.8)
   const bodyMass = randRange(
     ctx.rng,
     archetype === 'hunter' ? 1.2 : archetype === 'scavenger' ? 0.9 : 0.8,
@@ -734,6 +962,7 @@ function buildDNA(ctx: SimulationContext, archetype: Archetype, biome: Biome = '
   const maturityBase = 1 + Math.pow(clamp(bodyMass, 0.2, 80), 0.55) * 2.6
   const maturityArchetypeBias = archetype === 'hunter' ? 1.6 : archetype === 'scavenger' ? 1 : 0
   const maturityAgeYears = clamp(maturityBase + maturityArchetypeBias + randRange(ctx.rng, -1.25, 1.75), 1, 20)
+  const reproductionMaturityAgeYears = clamp(randRange(ctx.rng, 0.1, Math.min(6, maturityAgeYears)), 0.1, 6)
   const bodyPlan = createBaseBodyPlan(archetype, biome)
 
   return {
@@ -747,8 +976,192 @@ function buildDNA(ctx: SimulationContext, archetype: Archetype, biome: Biome = '
     baseSpeed: speedBase,
     visionRange: vision,
     hungerThreshold,
+    hungerRestMultiplier,
+    hungerSurvivalBufferScale,
+    growthReserveBase,
+    growthReserveGreedScale,
+    satiationBase,
+    satiationGreedScale,
+    patrolThresholdMinScale,
+    patrolThresholdMaxScale,
+    initialEnergyBirthMultiplier,
+    initialEnergySeedMultiplier,
     forageStartRatio,
     eatingGreed,
+    foragePressureBase,
+    foragePressureVolatility,
+    greedForageThreshold,
+    greedForageWeight,
+    greedForagePressureThreshold,
+    foragePressureSoftGate,
+    foragePressureExhaustionBuffer,
+    sleepPressureWeight,
+    exhaustionPressureBase,
+    exhaustionPressureStability,
+    forageIntensityThreshold,
+    sleepThresholdBase,
+    sleepThresholdStability,
+    sleepDebtMax,
+    sleepDebtGainScale,
+    sleepDebtStaminaFloor,
+    sleepEfficiencyBaseline,
+    sleepEfficiencyFactorBase,
+    sleepEfficiencyEffectScale,
+    sleepEfficiencyFactorMin,
+    sleepEfficiencyFactorMax,
+    sleepPressureRecoveryWeight,
+    sleepRecoveryScaleSleep,
+    sleepRecoveryScaleRecover,
+    sleepFatigueRecoveryScaleSleep,
+    sleepFatigueRecoveryScaleRecover,
+    sleepFatigueGainScale,
+    sleepStaminaFactorBase,
+    sleepStaminaFactorOffset,
+    sleepStaminaFactorScale,
+    sleepStaminaFactorMin,
+    sleepStaminaFactorMax,
+    sleepCircadianRestThreshold,
+    sleepCircadianStressScale,
+    sleepCircadianPushScale,
+    sleepCircadianPreferenceMidpoint,
+    digestionThresholdBase,
+    digestionThresholdStability,
+    recoveryThresholdBase,
+    recoveryThresholdStability,
+    greedHungerOffset,
+    plantHungerBoostThreshold,
+    plantHungerBoost,
+    keepEatingMultiplier,
+    grazeBiteBase,
+    grazeBiteGreedScale,
+    grazeBiteMin,
+    grazeBiteMax,
+    grazeMinBiomass,
+    grazeRemoveBiomass,
+    grazeTargetMinBiomass,
+    grazeMoistureLoss,
+    grazeEnergyMultiplier,
+    grazeHungerBase,
+    grazeHungerCuriosityScale,
+    grazeCuriosityForageThreshold,
+    grazeSearchRadiusBase,
+    grazeSearchRadiusCuriosityScale,
+    grazeScoreBiomassWeight,
+    grazeScoreNutrientWeight,
+    grazeDistanceFloor,
+    grazeHungerRatioThreshold,
+    grazeHungerRatioNoPreyThreshold,
+    grazeTargetWeightBase,
+    grazeTargetFatCapacityWeight,
+    grazeTargetHungerBoostBase,
+    huntPreyHungerRatioThreshold,
+    huntTargetDistanceFloor,
+    huntTargetFocusBase,
+    huntTargetFocusScale,
+    huntTargetAggressionBase,
+    huntTargetAggressionScale,
+    huntTargetAwarenessBase,
+    huntTargetAwarenessScale,
+    huntPreySizeBandScale,
+    huntPreySizeBandOffset,
+    huntPreySizeBandMin,
+    huntPreySizeBandMax,
+    huntPreySizeBiasBase,
+    huntPreySizeBiasMin,
+    huntPreySizeBiasMax,
+    huntPreySizeOverageBase,
+    huntPreySizeOverageThreshold,
+    huntPreySizeOverageMin,
+    huntPreySizeOverageMax,
+    huntStickinessLingerBase,
+    huntStickinessLingerScale,
+    huntStickinessAttentionBase,
+    huntStickinessAttentionScale,
+    huntCarrionHungerRatioThreshold,
+    huntCarrionNutrientsMin,
+    huntCarrionDistanceFloor,
+    huntCarrionFocusBase,
+    huntCarrionFocusScale,
+    huntCarrionHungerBase,
+    huntCarrionHungerScale,
+    huntCarrionAffinityBase,
+    huntCarrionAffinityScale,
+    huntCarrionNutrientBase,
+    huntCarrionNutrientScale,
+    huntCarrionNutrientNorm,
+    huntCarrionNutrientClampMax,
+    huntCarrionPreferWeight,
+    huntCorpseReachScale,
+    huntCorpseReachMin,
+    huntCorpseReachMax,
+    fightInitiativeAggressionWeight,
+    fightInitiativeSizeWeight,
+    fightInitiativeRandomWeight,
+    fightInitiativeBiasWeight,
+    fightExchangeCount,
+    fightLeverageExponent,
+    fightVariabilityBase,
+    fightVariabilityScale,
+    fightBaseDamage,
+    fightDamageCap,
+    scavengeBiteBase,
+    scavengeBiteMassScale,
+    scavengeBiteGreedBase,
+    scavengeBiteMin,
+    scavengeBiteMax,
+    scavengeMinNutrients,
+    fleeFearBiasFearWeight,
+    fleeFearBiasCowardiceWeight,
+    fleeSurvivalThreatBase,
+    fleeSurvivalThreatFearScale,
+    fleeSurvivalStabilityBase,
+    fleeSurvivalStabilityScale,
+    fleeSurvivalStressWeight,
+    fleeSurvivalThresholdBase,
+    fleeSurvivalThresholdStabilityScale,
+    fleeFightDriveAggressionWeight,
+    fleeFightDrivePersistenceWeight,
+    fleeBraveFearOffset,
+    fleeBraveThreatThreshold,
+    fleeEscapeDurationMin,
+    fleeEscapeDurationMax,
+    fleeEscapeTendencyMin,
+    fleeEscapeTendencyMax,
+    fleeSizeRatioOffset,
+    fleeSizeDeltaMin,
+    fleeSizeDeltaMax,
+    fleeSizeMultiplierBase,
+    fleeSizeMultiplierMin,
+    fleeSizeMultiplierMax,
+    fleePredatorScaleOffset,
+    fleePredatorScaleRange,
+    fleeThreatProximityBase,
+    fleeThreatDistanceFloor,
+    fleeThreatProximityWeight,
+    fleeThreatAwarenessWeight,
+    fleeThreatCowardiceWeight,
+    fleeThreatScoreMax,
+    fleeCowardiceClampMax,
+    fleeSpeedFloor,
+    fleeTriggerAwarenessWeight,
+    fleeTriggerFearWeight,
+    fleeTriggerCourageWeight,
+    fleeTriggerNormalization,
+    fleeTriggerClampMin,
+    fleeTriggerClampMax,
+    fleeDangerTimerMin,
+    fleeDangerHoldIntensityOffset,
+    fleeDangerHoldIntensityMin,
+    fleeDangerHoldIntensityMax,
+    fleeDangerIntensityBase,
+    fleeDangerDecayStep,
+    fleeDangerDecayBase,
+    fleeDangerDecayAttentionOffset,
+    fleeDangerDecayAttentionScale,
+    fleeDangerDecayMin,
+    fleeDangerDecayMax,
+    fleeSpeedBoostBase,
+    fleeSpeedBoostStaminaScale,
     fatCapacity,
     // Keep a reserve so animals don't instantly burn all storage.
     fatBurnThreshold: fatCapacity * randRange(ctx.rng, 0.25, 0.65),
@@ -770,6 +1183,34 @@ function buildDNA(ctx: SimulationContext, archetype: Archetype, biome: Biome = '
     attentionSpan: randRange(ctx.rng, 0.35, 0.9),
     libidoThreshold: randRange(ctx.rng, 0.4, 0.8),
     libidoGainRate: randRange(ctx.rng, 0.01, 0.05),
+    libidoPressureBase,
+    libidoPressureStabilityWeight,
+    mateSearchLibidoRatioThreshold,
+    mateSearchTurnJitterScale,
+    mateSearchTurnChanceBase,
+    mateSearchTurnChanceCuriosityScale,
+    mateCooldownDuration,
+    mateCooldownScaleBase,
+    mateCooldownFertilityScale,
+    mateCooldownScaleMin,
+    mateCooldownScaleMax,
+    mateEnergyCostScale,
+    mateGestationBase,
+    mateGestationScale,
+    patrolHerdCohesionWeight,
+    patrolHerdDependencyWeight,
+    patrolSocialPressureBase,
+    patrolSocialPressureStabilityWeight,
+    patrolSocialThresholdBase,
+    patrolSocialThresholdStabilityWeight,
+    patrolSpeedMultiplier,
+    curiosityDriveBase,
+    curiosityDriveStabilityWeight,
+    exploreThreshold,
+    idleDriveBase,
+    idleDriveStabilityWeight,
+    idleThreshold,
+    mateRange: randRange(ctx.rng, 20, 70),
     mutationRate: randRange(ctx.rng, 0.005, 0.03),
     bodyMass,
     metabolism: randRange(ctx.rng, 6, 12),
@@ -791,7 +1232,9 @@ function buildDNA(ctx: SimulationContext, archetype: Archetype, biome: Biome = '
     gestationCost: randRange(ctx.rng, 5, 20),
     moodStability: randRange(ctx.rng, 0.2, 0.9),
     cannibalism: randRange(ctx.rng, 0, 1),
+    terrainPreference: randRange(ctx.rng, 0, 1),
     maturityAgeYears,
+    reproductionMaturityAgeYears,
     // Scavengers only eat dead meat (corpse entities), not plants or live animals.
     preferredFood: archetype === 'hunter' ? ['prey', 'scavenger'] : archetype === 'scavenger' ? [] : ['plant'],
     stamina: randRange(ctx.rng, 0.7, 1.4),

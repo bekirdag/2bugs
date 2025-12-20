@@ -1,4 +1,4 @@
-import { AgentMeta, Body, Digestion, Energy, ArchetypeCode } from './components'
+import { AgentMeta, Body, Digestion, DNA, Energy, ArchetypeCode } from './components'
 import type { SimulationContext } from './types'
 
 import {
@@ -8,6 +8,7 @@ import {
   maxMassForLevel,
 } from '@/ecs/lifecycle'
 import { clamp } from '@/utils/math'
+import { clampGeneValue } from '@/ecs/genetics'
 
 const DEFAULT_MASS_BUILD_COST = 35 // intake units per 1.0 mass at 100% efficiency
 
@@ -53,10 +54,16 @@ export function applyFoodIntake(
 
   const genome = ctx.genomes.get(eaterId)
   const greed = clamp(genome?.eatingGreed ?? 0.5, 0, 1)
-  const metabolismNeed = Math.max(Energy.metabolism[eaterEntity], 1)
-  const hungerLine = (genome?.hungerThreshold ?? metabolismNeed * 8) + Energy.sleepDebt[eaterEntity]
+  const satiationBase = clampGeneValue('satiationBase', genome?.satiationBase ?? 0)
+  const satiationGreedScale = clampGeneValue('satiationGreedScale', genome?.satiationGreedScale ?? 0)
+  const hungerThreshold = clampGeneValue(
+    'hungerThreshold',
+    genome?.hungerThreshold ?? DNA.hungerThreshold[eaterEntity] ?? 0,
+  )
+  const hungerLine = hungerThreshold + Energy.sleepDebt[eaterEntity]
   const satiationMultiplier = clamp(options?.satiationMultiplier ?? 1, 0.2, 3)
-  const satiation = hungerLine * (0.9 + greed * 1.3) * satiationMultiplier // base: 0.9x .. 2.2x hungerLine
+  const satiationDrive = clamp(satiationBase + greed * satiationGreedScale, 0.2, 4)
+  const satiation = hungerLine * satiationDrive * satiationMultiplier
 
   const need = Math.max(0, satiation - Energy.value[eaterEntity])
   const toEnergy = Math.min(intake, need)
@@ -66,7 +73,7 @@ export function applyFoodIntake(
 
   if (genome) {
     const level = levelForAgent(ctx, eaterId)
-    const maturityYears = Math.max(1, Math.floor(options?.maturityYears ?? DEFAULT_MATURITY_YEARS))
+    const maturityYears = Math.max(1, Math.floor(genome?.maturityAgeYears ?? DEFAULT_MATURITY_YEARS))
     const maxMass = clamp(
       maxMassForLevel(genome.bodyMass, level, { maturityYears }),
       0.2,

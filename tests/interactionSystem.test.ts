@@ -34,6 +34,14 @@ const snapshot: SimulationSnapshot = {
         attentionSpan: 0.6,
         libidoThreshold: 0.6,
         libidoGainRate: 0.05,
+        libidoPressureBase: 0.8,
+        libidoPressureStabilityWeight: 0.25,
+        curiosityDriveBase: 0.7,
+        curiosityDriveStabilityWeight: 0.4,
+        exploreThreshold: 0.52,
+        idleDriveBase: 0.6,
+        idleDriveStabilityWeight: 0.6,
+        idleThreshold: 0.55,
         mutationRate: 0.01,
         bodyMass: 20,
         metabolism: 8,
@@ -124,4 +132,3 @@ if (!(after.fatStore > before.fatStore)) {
 }
 
 console.log('interactionSystem feeding transfer test passed')
-

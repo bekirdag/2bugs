@@ -21,31 +21,38 @@ export function grazingSystem(ctx: SimulationContext, curiosityBias = 0) {
     if (mode === MODE.Sleep || mode === MODE.Flee || mode === MODE.Mate || mode === MODE.Fight) return
     if (mode !== MODE.Graze && mode !== MODE.Patrol && mode !== MODE.Idle) return
     const genome = ctx.genomes.get(id)
+    if (!genome) return
     const archetype = AgentMeta.archetype[entity]
-    const curiosity = (DNA.curiosity[entity] ?? 0.3) + curiosityBias
+    const curiosity = (genome.curiosity ?? DNA.curiosity[entity] ?? 0) + curiosityBias
     const eatsPlants =
       genome?.preferredFood?.includes('plant') ?? archetype === ArchetypeCode.Prey
     if (!eatsPlants) return
 
-    const hungerThreshold = genome?.hungerThreshold ?? Energy.metabolism[entity] * 8
-    const hungerLine = hungerThreshold * (1 + curiosity * 0.4)
+    const hungerThreshold = genome.hungerThreshold
+    const hungerLine = hungerThreshold * (genome.grazeHungerBase + curiosity * genome.grazeHungerCuriosityScale)
     const wantsForage =
-      Energy.value[entity] < hungerLine || ModeState.mode[entity] === MODE.Graze || curiosity > 0.55
+      Energy.value[entity] < hungerLine ||
+      ModeState.mode[entity] === MODE.Graze ||
+      curiosity > genome.grazeCuriosityForageThreshold
     if (!wantsForage) return
 
     const me = { x: Position.x[entity], y: Position.y[entity] }
-    const searchRadius = 80 + curiosity * 220
+    const searchRadius = genome.grazeSearchRadiusBase + curiosity * genome.grazeSearchRadiusCuriosityScale
     const buckets = ctx.plantIndex.query(me, searchRadius)
     let bestId = -1
     let bestScore = 0
     buckets.forEach((bucket) => {
       const plantEntity = ctx.plants.get(bucket.id)
       if (plantEntity === undefined) return
-      if ((PlantStats.biomass[plantEntity] || 0) <= 0.12) return
-      const dist = Math.max(1, Math.sqrt(distanceSquared(me, { x: Position.x[plantEntity], y: Position.y[plantEntity] })))
+      if ((PlantStats.biomass[plantEntity] || 0) <= genome.grazeTargetMinBiomass) return
+      const dist = Math.max(
+        genome.grazeDistanceFloor,
+        Math.sqrt(distanceSquared(me, { x: Position.x[plantEntity], y: Position.y[plantEntity] })),
+      )
       const biomass = PlantStats.biomass[plantEntity]
       const nutrients = PlantStats.nutrientDensity[plantEntity]
-      const score = (biomass * 0.7 + nutrients * 0.3) / dist
+      const score =
+        (biomass * genome.grazeScoreBiomassWeight + nutrients * genome.grazeScoreNutrientWeight) / dist
       if (score > bestScore) {
         bestScore = score
         bestId = bucket.id

@@ -3,9 +3,16 @@ import type { SimulationContext } from '../types'
 
 import type { ControlState } from '@/types/sim'
 import { clamp } from '@/utils/math'
+import { clampGeneValue } from '@/ecs/genetics'
 import { featureFlags } from '@/config/featureFlags'
 import { deriveMovementProfile } from '@/ecs/bodyPlan'
-import { SIM_YEAR_TICKS, effectiveFatBurnThreshold, levelFromAgeYears, maxMassForLevel } from '@/ecs/lifecycle'
+import {
+  DEFAULT_MATURITY_YEARS,
+  SIM_YEAR_TICKS,
+  effectiveFatBurnThreshold,
+  levelFromAgeYears,
+  maxMassForLevel,
+} from '@/ecs/lifecycle'
 
 const MODE = {
   Sleep: 1,
@@ -52,10 +59,16 @@ export function metabolismSystem(
     const yearTicks = Math.max(1, ctx.yearTicks || controls.yearTicks || SIM_YEAR_TICKS)
     const ageYears = Math.max(0, ctx.tick - birthTick) / yearTicks
     const maturityAgeYears = clamp(genome?.maturityAgeYears ?? 1, 1, 20)
-    const isMature = ageYears >= maturityAgeYears
+    const reproductionMaturityAgeYears = clamp(
+      genome?.reproductionMaturityAgeYears ?? genome?.maturityAgeYears ?? 1,
+      0.1,
+      6,
+    )
+    const isMature = ageYears >= reproductionMaturityAgeYears
     const level = levelFromAgeYears(ageYears)
+    const maturityYears = Math.max(1, Math.floor(genome?.maturityAgeYears ?? DEFAULT_MATURITY_YEARS))
     const targetMass = genome
-      ? clamp(maxMassForLevel(genome.bodyMass, level, { maturityYears: controls.maturityYears ?? 6 }), 0.2, 80)
+      ? clamp(maxMassForLevel(genome.bodyMass, level, { maturityYears }), 0.2, 80)
       : currentMass
     // Larger animals require more energy to maintain (basal metabolic scaling).
     const sizeMetabolicFactor = clamp(Math.pow(currentMass, 0.35), 0.6, 3.2)
@@ -66,16 +79,66 @@ export function metabolismSystem(
     }
     const biome = genome?.biome ?? 'land'
     const stressLoad = 1 + Mood.stress[entity] * 0.25
-    const hungerMultiplier = mode === MODE.Hunt ? 1.35 : mode === MODE.Flee ? 1.7 : 1
+    const hungerMultiplier = mode === MODE.Hunt ? 1.1 : mode === MODE.Flee ? 1.7 : 1
     const staminaFactor = 1 / Math.max(DNA.stamina[entity] ?? 1, 0.4)
     const metabolismFactor = clamp((DNA.metabolism[entity] ?? 8) / 8, 0.6, 1.6)
+    const baseSpeed = Math.max(DNA.baseSpeed[entity] ?? genome?.baseSpeed ?? 0, 1)
+    const baseSpeedFactor = clamp(baseSpeed / 260, 0.7, 1.6)
+    let locomotionProfileFactor = 1
+    if (biome === 'land' && featureFlags.landBodyPlan && profile?.land) {
+      const legCount = Math.max(0, profile.land.legCount)
+      locomotionProfileFactor = clamp(
+        0.85 + legCount * 0.03 + profile.land.strideLength * 0.1 + profile.land.agility * 0.05,
+        0.8,
+        1.4,
+      )
+    } else if (biome === 'water' && featureFlags.aquaticBodyPlan && profile?.water) {
+      locomotionProfileFactor = clamp(
+        0.9 + profile.water.thrust * 0.1 + profile.water.turnRate * 0.05,
+        0.8,
+        1.3,
+      )
+    } else if (biome === 'air' && featureFlags.aerialBodyPlan && profile?.air) {
+      locomotionProfileFactor = clamp(
+        0.9 + profile.air.lift * 0.1 + profile.air.glide * 0.05 + profile.air.takeoff * 0.05,
+        0.8,
+        1.3,
+      )
+    }
+    const hungerThreshold = clampGeneValue(
+      'hungerThreshold',
+      genome?.hungerThreshold ?? DNA.hungerThreshold[entity] ?? 0,
+    )
+    const hungerRestMultiplier = clampGeneValue(
+      'hungerRestMultiplier',
+      genome?.hungerRestMultiplier ?? 0,
+    )
+    const hungerSurvivalBufferScale = clampGeneValue(
+      'hungerSurvivalBufferScale',
+      genome?.hungerSurvivalBufferScale ?? 0,
+    )
+    const growthReserveBase = clampGeneValue('growthReserveBase', genome?.growthReserveBase ?? 0)
+    const growthReserveGreedScale = clampGeneValue(
+      'growthReserveGreedScale',
+      genome?.growthReserveGreedScale ?? 0,
+    )
     const burnRate =
-      DNA.metabolism[entity] * stressLoad * hungerMultiplier * dt * speed * staminaFactor * 0.25 * sizeMetabolicFactor
+      DNA.metabolism[entity] *
+      stressLoad *
+      hungerMultiplier *
+      dt *
+      speed *
+      staminaFactor *
+      0.25 *
+      sizeMetabolicFactor *
+      baseSpeedFactor *
+      locomotionProfileFactor
 
+    const movementSpeed = Math.sqrt(Velocity.x[entity] * Velocity.x[entity] + Velocity.y[entity] * Velocity.y[entity])
+    const movementRatio = clamp(movementSpeed / baseSpeed, 0, 1.5)
+    const senseUpkeep = DNA.senseUpkeep[entity] ?? 0
     const senseDrain =
-      featureFlags.sensesFromBodyPlan && DNA.senseUpkeep[entity]
-        ? (DNA.senseUpkeep[entity] ?? 0) * dt * speed * 0.25 * sizeMetabolicFactor * senseUpkeepScale
-        : 0
+      senseUpkeep > 0 ? senseUpkeep * dt * speed * 0.25 * sizeMetabolicFactor * senseUpkeepScale : 0
     const morphologyDrain = genome?.bodyPlan
       ? (() => {
           const plan = genome.bodyPlan
@@ -92,20 +155,30 @@ export function metabolismSystem(
             tailCount * MORPHOLOGY_COST.tail +
             finCount * MORPHOLOGY_COST.fin +
             wingCount * MORPHOLOGY_COST.wing
-          return raw * dt * speed * 0.25 * sizeMetabolicFactor * morphologyUpkeepScale
+          const activityFactor = clamp(0.25 + movementRatio * 0.85, 0.25, 1.1)
+          return raw * activityFactor * dt * speed * 0.25 * sizeMetabolicFactor * morphologyUpkeepScale
         })()
       : 0
+    // Running / movement drain scaled by actual velocity
     let locomotionDrain = 0
     if (biome === 'water' && featureFlags.aquaticBodyPlan && profile?.water) {
       locomotionDrain = (profile.water.thrust + profile.water.turnRate) * dt * speed * 0.4 * sizeMetabolicFactor
     } else if (biome === 'air' && featureFlags.aerialBodyPlan && profile?.air) {
       locomotionDrain = (profile.air.lift + profile.air.takeoff * 0.5) * dt * speed * 0.4 * sizeMetabolicFactor
+    } else if (biome === 'land' && featureFlags.landBodyPlan && profile?.land) {
+      const legCount = Math.max(0, profile.land.legCount)
+      const strideLength = Math.max(0, profile.land.strideLength)
+      const agility = Math.max(0, profile.land.agility)
+      const landEffort = legCount * 0.08 + strideLength * 0.5 + agility * 0.25
+      locomotionDrain = landEffort * movementRatio * dt * speed * 0.25 * sizeMetabolicFactor
     }
-
-    // Running / movement drain scaled by actual velocity
-    const movementSpeed = Math.sqrt(Velocity.x[entity] * Velocity.x[entity] + Velocity.y[entity] * Velocity.y[entity])
     const runDrain =
-      movementSpeed * dt * speed * (mode === MODE.Flee ? 0.35 : mode === MODE.Hunt ? 0.25 : 0.12) * staminaFactor
+      movementSpeed *
+      dt *
+      speed *
+      (mode === MODE.Flee ? 0.35 : mode === MODE.Hunt ? 0.25 : 0.12) *
+      staminaFactor *
+      sizeMetabolicFactor
 
     // Fat mass tax even while idle
     const fatRatio = Energy.fatCapacity[entity] > 0 ? Energy.fatStore[entity] / Energy.fatCapacity[entity] : 0
@@ -113,7 +186,13 @@ export function metabolismSystem(
 
     // Pregnancy upkeep
     const isPregnant = ctx.pregnancies.has(id)
-    const pregnancyCost = isPregnant ? (DNA.gestationCost[entity] ?? 5) * dt * speed * 0.3 : 0
+    const pregnancy = isPregnant ? ctx.pregnancies.get(id) : undefined
+    const fetusMass = pregnancy?.dna.bodyMass ?? genome?.bodyMass ?? currentMass
+    const fetusRatio = clamp(fetusMass / Math.max(currentMass, 0.2), 0.4, 1.6)
+    const pregnancyGestationCost = DNA.gestationCost[entity] ?? 5
+    const pregnancyCost = isPregnant
+      ? pregnancyGestationCost * dt * speed * 0.2 * sizeMetabolicFactor * (0.6 + fetusRatio * 0.6)
+      : 0
 
     const totalDrain = burnRate + senseDrain + morphologyDrain + locomotionDrain + runDrain + massPenalty + pregnancyCost
     const scaledDrain = totalDrain * ENERGY_DRAIN_SCALE
@@ -127,12 +206,29 @@ export function metabolismSystem(
       if (availableFat > 0) {
         const cover = Math.min(scaledDrain, availableFat)
         Energy.fatStore[entity] -= cover
-        Energy.value[entity] += cover
+        const sleepEfficiency = clampGeneValue('sleepEfficiency', genome.sleepEfficiency)
+        const sleepEfficiencyBaseline = clampGeneValue('sleepEfficiencyBaseline', genome.sleepEfficiencyBaseline)
+        const sleepEfficiencyFactorMin = clampGeneValue('sleepEfficiencyFactorMin', genome.sleepEfficiencyFactorMin)
+        const sleepEfficiencyFactorMax = clampGeneValue('sleepEfficiencyFactorMax', genome.sleepEfficiencyFactorMax)
+        const fatConversionFactor = clamp(
+          sleepEfficiencyBaseline > 0 ? sleepEfficiency / sleepEfficiencyBaseline : sleepEfficiency,
+          sleepEfficiencyFactorMin,
+          sleepEfficiencyFactorMax,
+        )
+        Energy.value[entity] += cover * fatConversionFactor
       }
     }
     if (Energy.value[entity] < 0 && Energy.fatStore[entity] > 0) {
       const deficit = Math.abs(Energy.value[entity])
-      const fatConversionFactor = clamp((DNA.sleepEfficiency[entity] ?? 0.8) / 0.8, 0.6, 1.4)
+      const sleepEfficiency = clampGeneValue('sleepEfficiency', genome?.sleepEfficiency ?? 0)
+      const sleepEfficiencyBaseline = clampGeneValue('sleepEfficiencyBaseline', genome?.sleepEfficiencyBaseline ?? 0)
+      const sleepEfficiencyFactorMin = clampGeneValue('sleepEfficiencyFactorMin', genome?.sleepEfficiencyFactorMin ?? 0)
+      const sleepEfficiencyFactorMax = clampGeneValue('sleepEfficiencyFactorMax', genome?.sleepEfficiencyFactorMax ?? 0)
+      const fatConversionFactor = clamp(
+        sleepEfficiencyBaseline > 0 ? sleepEfficiency / sleepEfficiencyBaseline : sleepEfficiency,
+        sleepEfficiencyFactorMin,
+        sleepEfficiencyFactorMax,
+      )
       const fatNeeded = deficit / fatConversionFactor
       const repay = Math.min(Energy.fatStore[entity], fatNeeded)
       Energy.fatStore[entity] -= repay
@@ -142,10 +238,9 @@ export function metabolismSystem(
     // Grow body mass over time when well-fed: convert a portion of surplus energy/fat into lean mass
     // (phenotype) up to the level-based cap.
     if (genome && currentMass < targetMass) {
-      const hungerLine =
-        ((genome.hungerThreshold ?? Energy.metabolism[entity] * 8) + Energy.sleepDebt[entity]) *
-        // Greedier animals keep higher reserves before turning surplus into growth.
-        (0.95 + clamp(genome.eatingGreed ?? 0.5, 0, 1) * 0.35)
+      const greed = clamp(genome.eatingGreed ?? 0.5, 0, 1)
+      const reserveMultiplier = clamp(growthReserveBase + greed * growthReserveGreedScale, 0.2, 3)
+      const hungerLine = (hungerThreshold + Energy.sleepDebt[entity]) * reserveMultiplier
       const threshold = effectiveFatBurnThreshold(genome, currentMass, Energy.fatCapacity[entity])
       const fatAboveThreshold = Math.max(0, Energy.fatStore[entity] - threshold)
       const energySurplus = Energy.value[entity] - hungerLine
@@ -182,7 +277,6 @@ export function metabolismSystem(
     // Burn fat in "bad times" (not just during sleep) to avoid hitting zero energy without searching.
     // Keep a small reserve under `fatBurnThreshold` so animals don't instantly consume all storage.
     if (mode !== MODE.Sleep && genome) {
-      const hungerThreshold = genome?.hungerThreshold ?? Energy.metabolism[entity] * 8
       const hungerLine = hungerThreshold + Energy.sleepDebt[entity]
       const threshold = effectiveFatBurnThreshold(genome, currentMass, Energy.fatCapacity[entity])
       const availableFat = Math.max(0, Energy.fatStore[entity] - threshold)
@@ -195,15 +289,15 @@ export function metabolismSystem(
       }
     }
 
-    const hungerThreshold = genome?.hungerThreshold ?? Energy.metabolism[entity] * 8
-    const survivalBuffer = Math.max(0, (DNA.stamina[entity] ?? 1) - 1) * hungerThreshold * 0.08
+    const survivalBuffer =
+      Math.max(0, (DNA.stamina[entity] ?? 1) - 1) * hungerThreshold * hungerSurvivalBufferScale
     if (Energy.value[entity] <= -survivalBuffer && Energy.fatStore[entity] <= 0) {
       fallen.push(id)
       return
     }
 
     const hunger = Energy.value[entity] < hungerThreshold + Energy.sleepDebt[entity]
-    const wantsRest = Energy.value[entity] > hungerThreshold * 1.5
+    const wantsRest = Energy.value[entity] > hungerThreshold * hungerRestMultiplier
 
     if (hunger) {
       Mood.focus[entity] = clamp(Mood.focus[entity] + 0.4 * dt * moodScale, 0, 1)
@@ -222,31 +316,65 @@ export function metabolismSystem(
     const gestationDecayScale = clamp(1 - (gestationCost - 10) * 0.02, 0.6, 1.4)
     ModeState.gestationTimer[entity] = Math.max(0, ModeState.gestationTimer[entity] - dt * gestationDecayScale)
     if (ModeState.dangerTimer[entity] > 0) {
-      const dangerDecayScale = clamp(1 - (attentionSpan - 0.5) * 0.6, 0.5, 1.5)
+      const fleeDangerDecayBase = genome?.fleeDangerDecayBase ?? 1
+      const fleeDangerDecayAttentionOffset = genome?.fleeDangerDecayAttentionOffset ?? 0.5
+      const fleeDangerDecayAttentionScale = genome?.fleeDangerDecayAttentionScale ?? 0.6
+      const fleeDangerDecayMin = genome?.fleeDangerDecayMin ?? 0.5
+      const fleeDangerDecayMax = genome?.fleeDangerDecayMax ?? 1.5
+      const dangerDecayScale = clamp(
+        fleeDangerDecayBase - (attentionSpan - fleeDangerDecayAttentionOffset) * fleeDangerDecayAttentionScale,
+        fleeDangerDecayMin,
+        fleeDangerDecayMax,
+      )
       ModeState.dangerTimer[entity] = Math.max(0, ModeState.dangerTimer[entity] - dt * dangerDecayScale)
     }
     if (ModeState.sexCooldown[entity] > 0) {
-      const fertility = clamp(DNA.fertility[entity] ?? 0.3, 0.1, 1)
-      const sexCooldownScale = clamp(0.7 + fertility, 0.6, 1.7)
+      const fertility = clampGeneValue('fertility', DNA.fertility[entity] ?? 0)
+      const mateCooldownScaleBase = clampGeneValue(
+        'mateCooldownScaleBase',
+        genome?.mateCooldownScaleBase ?? 0,
+      )
+      const mateCooldownFertilityScale = clampGeneValue(
+        'mateCooldownFertilityScale',
+        genome?.mateCooldownFertilityScale ?? 0,
+      )
+      const mateCooldownScaleMin = clampGeneValue('mateCooldownScaleMin', genome?.mateCooldownScaleMin ?? 0)
+      const mateCooldownScaleMax = clampGeneValue('mateCooldownScaleMax', genome?.mateCooldownScaleMax ?? 0)
+      const sexCooldownScale = clamp(
+        mateCooldownScaleBase + fertility * mateCooldownFertilityScale,
+        mateCooldownScaleMin,
+        mateCooldownScaleMax,
+      )
       ModeState.sexCooldown[entity] = Math.max(0, ModeState.sexCooldown[entity] - dt * sexCooldownScale)
     }
 
     if (!isMature) {
       Reproduction.libido[entity] = 0
     } else {
-      const libidoGainRate = clamp(genome?.libidoGainRate ?? (DNA.fertility[entity] ?? 0.3) * 0.25, 0, 1)
+      const libidoGainRate = clampGeneValue('libidoGainRate', genome?.libidoGainRate ?? 0)
       Reproduction.libido[entity] = clamp(Reproduction.libido[entity] + libidoGainRate * dt, 0, 1)
     }
 
     if (mode === MODE.Sleep || mode === MODE.Recover) {
-      const recoveryScale = mode === MODE.Recover ? 0.45 : 1
-      const recovery = (DNA.sleepEfficiency[entity] ?? 0.8) * dt * recoveryScale
+      const recoveryScale =
+        mode === MODE.Recover
+          ? clampGeneValue('sleepRecoveryScaleRecover', genome?.sleepRecoveryScaleRecover ?? 0)
+          : clampGeneValue('sleepRecoveryScaleSleep', genome?.sleepRecoveryScaleSleep ?? 0)
+      const recovery = clampGeneValue('sleepEfficiency', genome?.sleepEfficiency ?? 0) * dt * recoveryScale
       Energy.sleepDebt[entity] = Math.max(0, Energy.sleepDebt[entity] - recovery)
-      Mood.fatigue[entity] = clamp(Mood.fatigue[entity] - recovery * (mode === MODE.Recover ? 0.25 : 0.4), 0, 1)
+      const fatigueScale =
+        mode === MODE.Recover
+          ? clampGeneValue('sleepFatigueRecoveryScaleRecover', genome?.sleepFatigueRecoveryScaleRecover ?? 0)
+          : clampGeneValue('sleepFatigueRecoveryScaleSleep', genome?.sleepFatigueRecoveryScaleSleep ?? 0)
+      Mood.fatigue[entity] = clamp(Mood.fatigue[entity] - recovery * fatigueScale, 0, 1)
     } else {
-      const debtGain = dt / Math.max(DNA.stamina[entity] ?? 1, 0.5)
-      Energy.sleepDebt[entity] = Math.min(5, Energy.sleepDebt[entity] + debtGain)
-      Mood.fatigue[entity] = clamp(Mood.fatigue[entity] + debtGain * 0.2, 0, 1)
+      const sleepDebtMax = Math.max(clampGeneValue('sleepDebtMax', genome?.sleepDebtMax ?? 0), 0.1)
+      const sleepDebtGainScale = clampGeneValue('sleepDebtGainScale', genome?.sleepDebtGainScale ?? 0)
+      const sleepDebtStaminaFloor = clampGeneValue('sleepDebtStaminaFloor', genome?.sleepDebtStaminaFloor ?? 0)
+      const debtGain = (dt * sleepDebtGainScale) / Math.max(DNA.stamina[entity] ?? 1, sleepDebtStaminaFloor)
+      Energy.sleepDebt[entity] = Math.min(sleepDebtMax, Energy.sleepDebt[entity] + debtGain)
+      const sleepFatigueGainScale = clampGeneValue('sleepFatigueGainScale', genome?.sleepFatigueGainScale ?? 0)
+      Mood.fatigue[entity] = clamp(Mood.fatigue[entity] + debtGain * sleepFatigueGainScale, 0, 1)
     }
   })
 

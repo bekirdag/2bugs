@@ -3,10 +3,12 @@ import {
   Body,
   DNA,
   Energy,
+  Fertilizer,
   Heading,
   LocomotionState,
   ModeState,
   Obstacle,
+  PlantStats,
   Position,
   Reproduction,
   Velocity,
@@ -14,6 +16,7 @@ import {
 import type { SimulationContext } from '../types'
 
 import { clamp, lerpAngle } from '@/utils/math'
+import { clampGeneValue } from '@/ecs/genetics'
 import { featureFlags } from '@/config/featureFlags'
 import { deriveMovementProfile } from '@/ecs/bodyPlan'
 import type { DNA as GenomeDNA } from '@/types/sim'
@@ -161,6 +164,9 @@ const MODE = {
 } as const
 
 const FIGHT_HOLD_RADIUS = 20
+const HOUSING_HOLD_RADIUS = 28
+const HOUSING_SEARCH_RADIUS = 280
+const OPEN_FIELD_CLEARANCE = 140
 
 export function movementSystem(
   ctx: SimulationContext,
@@ -180,24 +186,53 @@ export function movementSystem(
 
   ctx.agents.forEach((entity, id) => {
     const mode = ModeState.mode[entity]
-    const resting =
+    let resting =
       mode === MODE.Sleep ||
       mode === MODE.Idle ||
       mode === MODE.Digest ||
       mode === MODE.Recover
-    const targetPosSnapshot = resolveTargetPosition(ctx, entity)
-    const distanceToTarget =
-      targetPosSnapshot &&
-      Math.sqrt(
-        (targetPosSnapshot.x - Position.x[entity]) * (targetPosSnapshot.x - Position.x[entity]) +
-          (targetPosSnapshot.y - Position.y[entity]) * (targetPosSnapshot.y - Position.y[entity]),
-      )
-    const holdPosition = mode === MODE.Fight && distanceToTarget !== null && distanceToTarget !== undefined && distanceToTarget <= FIGHT_HOLD_RADIUS
-
-    let targetPosition = !resting ? targetPosSnapshot : null
+    const targetPosSnapshot = resting ? null : resolveTargetPosition(ctx, entity)
+    let targetPosition = targetPosSnapshot
 
     const genome = ctx.genomes.get(id)
     const biome = genome?.biome ?? 'land'
+    let housingTarget: { x: number; y: number } | null = null
+    if (!targetPosition && (mode === MODE.Sleep || mode === MODE.Idle || mode === MODE.Patrol)) {
+      const terrainPreference = clamp(
+        genome?.terrainPreference ?? DNA.terrainPreference[entity] ?? 0.5,
+        0,
+        1,
+      )
+      housingTarget = resolveHousingTarget(ctx, entity, terrainPreference)
+      if (housingTarget) {
+        targetPosition = housingTarget
+      }
+    }
+    const distanceToTarget =
+      targetPosition &&
+      Math.sqrt(
+        (targetPosition.x - Position.x[entity]) * (targetPosition.x - Position.x[entity]) +
+          (targetPosition.y - Position.y[entity]) * (targetPosition.y - Position.y[entity]),
+      )
+    let holdPosition =
+      mode === MODE.Fight &&
+      distanceToTarget !== null &&
+      distanceToTarget !== undefined &&
+      distanceToTarget <= FIGHT_HOLD_RADIUS
+    const housingHold =
+      housingTarget &&
+      distanceToTarget !== null &&
+      distanceToTarget !== undefined &&
+      distanceToTarget <= HOUSING_HOLD_RADIUS
+    if (housingHold) {
+      holdPosition = true
+    }
+    if (housingTarget && (mode === MODE.Sleep || mode === MODE.Idle)) {
+      resting = housingHold
+    }
+    if (resting && !housingTarget) {
+      targetPosition = null
+    }
     let profile = ctx.locomotion.get(id)
     const needsProfile =
       (featureFlags.landBodyPlan && biome === 'land' && (!profile || !profile.land)) ||
@@ -248,40 +283,67 @@ export function movementSystem(
       if (mode === MODE.Flee) desiredHeading += Math.PI
     } else if (!resting) {
       const curiosity = clamp((DNA.curiosity[entity] ?? 0.2) + curiosityBias, 0.05, 1)
-      const hungerLine = ((genome?.hungerThreshold ?? Energy.metabolism[entity] * 8) + Energy.sleepDebt[entity]) * 1.0
+      const hungerLine =
+        (clampGeneValue('hungerThreshold', genome?.hungerThreshold ?? DNA.hungerThreshold[entity] ?? 0) +
+          Energy.sleepDebt[entity]) *
+          1.0
       const hungerRatio = clamp(Energy.value[entity] / Math.max(hungerLine, 1), 0, 2)
-      const forageStartRatio = clamp(genome?.forageStartRatio ?? 0.65, 0.25, 0.95)
-      const libidoRatio = clamp(
-        Reproduction.libido[entity] / Math.max(Reproduction.libidoThreshold[entity] || 0.6, 0.1),
-        0,
-        2,
+      const forageStartRatio = clampGeneValue('forageStartRatio', genome?.forageStartRatio ?? 0)
+      const libidoThreshold = clampGeneValue(
+        'libidoThreshold',
+        genome?.libidoThreshold ?? Reproduction.libidoThreshold[entity] ?? 0,
       )
+      const libidoRatio = libidoThreshold > 0 ? clamp(Reproduction.libido[entity] / libidoThreshold, 0, 2) : 0
       const foodSearching = hungerRatio < forageStartRatio && mode !== MODE.Flee && mode !== MODE.Sleep
-      const mateSearching = mode === MODE.Mate && libidoRatio > forageStartRatio
+      const mateSearchLibidoRatioThreshold = clampGeneValue(
+        'mateSearchLibidoRatioThreshold',
+        genome?.mateSearchLibidoRatioThreshold ?? 0,
+      )
+      const mateSearching =
+        mode === MODE.Mate && libidoRatio >= mateSearchLibidoRatioThreshold && hungerRatio >= forageStartRatio
       const activeSearch = (foodSearching || mateSearching) && mode !== MODE.Fight
 
       // If we have no sensed target but are "in need", widen the random walk so agents actively explore
       // instead of slowly drifting in place.
-      const turnJitterScale = activeSearch ? 2.75 : 1
+      const mateSearchTurnJitterScale = clampGeneValue(
+        'mateSearchTurnJitterScale',
+        genome?.mateSearchTurnJitterScale ?? 0,
+      )
+      const turnJitterScale = mateSearching ? mateSearchTurnJitterScale : activeSearch ? 2.75 : 1
       const jitter = (ctx.rng() - 0.5) * curiosity * 2 * turnJitterScale
       desiredHeading += jitter * step * clamp(turnFactor, 0.3, 3)
 
       // Occasionally pick a new random direction to avoid local oscillation when searching.
-      if (activeSearch && ctx.rng() < step * (0.18 + curiosity * 0.22)) {
+      const mateSearchTurnChanceBase = clampGeneValue(
+        'mateSearchTurnChanceBase',
+        genome?.mateSearchTurnChanceBase ?? 0,
+      )
+      const mateSearchTurnChanceCuriosityScale = clampGeneValue(
+        'mateSearchTurnChanceCuriosityScale',
+        genome?.mateSearchTurnChanceCuriosityScale ?? 0,
+      )
+      const mateTurnChance = step * (mateSearchTurnChanceBase + curiosity * mateSearchTurnChanceCuriosityScale)
+      const forageTurnChance = step * (0.18 + curiosity * 0.22)
+      if (mateSearching && ctx.rng() < mateTurnChance) {
+        desiredHeading = ctx.rng() * Math.PI * 2
+      } else if (activeSearch && ctx.rng() < forageTurnChance) {
         desiredHeading = ctx.rng() * Math.PI * 2
       }
     }
 
     const stamina = DNA.stamina[entity] ?? 1
+    const patrolSpeedMultiplier = clampGeneValue('patrolSpeedMultiplier', genome?.patrolSpeedMultiplier ?? 0)
+    const fleeSpeedBoostBase = genome?.fleeSpeedBoostBase ?? 1.2
+    const fleeSpeedBoostStaminaScale = genome?.fleeSpeedBoostStaminaScale ?? 0.2
     const modeBoost =
       mode === MODE.Flee
-        ? 1.2 + stamina * 0.2
+        ? fleeSpeedBoostBase + stamina * fleeSpeedBoostStaminaScale
         : mode === MODE.Hunt
           ? 1 + stamina * 0.1
           : mode === MODE.Graze
             ? 0.8
             : mode === MODE.Patrol
-              ? 1.05
+              ? patrolSpeedMultiplier
               : mode === MODE.Fight
                 ? 0.4
                 : 1
@@ -311,16 +373,24 @@ export function movementSystem(
     } else {
       const metabolismNeed = Math.max(Energy.metabolism[entity], 1)
       const energyRatio = clamp(Energy.value[entity] / (metabolismNeed * 2), 0, 1)
-      const hungerLine = (genome?.hungerThreshold ?? metabolismNeed * 8) + Energy.sleepDebt[entity]
+      const hungerLine =
+        clampGeneValue('hungerThreshold', genome?.hungerThreshold ?? DNA.hungerThreshold[entity] ?? 0) +
+        Energy.sleepDebt[entity]
       const hungerRatio = clamp(Energy.value[entity] / Math.max(hungerLine, 1), 0, 2)
-      const forageStartRatio = clamp(genome?.forageStartRatio ?? 0.65, 0.25, 0.95)
-      const libidoRatio = clamp(
-        Reproduction.libido[entity] / Math.max(Reproduction.libidoThreshold[entity] || 0.6, 0.1),
-        0,
-        2,
+      const forageStartRatio = clampGeneValue('forageStartRatio', genome?.forageStartRatio ?? 0)
+      const libidoThreshold = clampGeneValue(
+        'libidoThreshold',
+        genome?.libidoThreshold ?? Reproduction.libidoThreshold[entity] ?? 0,
       )
+      const libidoRatio = libidoThreshold > 0 ? clamp(Reproduction.libido[entity] / libidoThreshold, 0, 2) : 0
+      const mateSearchLibidoRatioThreshold = clampGeneValue(
+        'mateSearchLibidoRatioThreshold',
+        genome?.mateSearchLibidoRatioThreshold ?? 0,
+      )
+      const mateSearching =
+        mode === MODE.Mate && libidoRatio >= mateSearchLibidoRatioThreshold && hungerRatio >= forageStartRatio
       const isSearching =
-        (hungerRatio < forageStartRatio || (mode === MODE.Mate && libidoRatio > forageStartRatio)) &&
+        (hungerRatio < forageStartRatio || mateSearching) &&
         mode !== MODE.Sleep &&
         mode !== MODE.Flee
 
@@ -595,6 +665,144 @@ function resolveTargetPosition(ctx: SimulationContext, entity: number) {
     return { x: Position.x[targetEntity], y: Position.y[targetEntity] }
   }
   return null
+}
+
+type HousingPreference = 'rock' | 'open' | 'plants' | 'fertilizer'
+type SpatialIndex = SimulationContext['rockIndex']
+
+function resolveHousingTarget(
+  ctx: SimulationContext,
+  entity: number,
+  preference: number,
+): { x: number; y: number } | null {
+  const choice = decodeHousingPreference(preference)
+  const me = { x: Position.x[entity], y: Position.y[entity] }
+  if (choice === 'rock') {
+    const rock = findNearestIndexed(ctx, ctx.rockIndex, ctx.rocks, me, HOUSING_SEARCH_RADIUS)
+    if (!rock) return null
+    const rockPos = { x: Position.x[rock.entity], y: Position.y[rock.entity] }
+    const rockRadius = Obstacle.radius[rock.entity] || 0
+    const desired = Math.max(rockRadius + 18, 26)
+    return wrapToBounds(ctx, offsetFromCenter(ctx, rockPos, me, desired))
+  }
+  if (choice === 'plants') {
+    const plant = findNearestIndexed(
+      ctx,
+      ctx.plantIndex,
+      ctx.plants,
+      me,
+      HOUSING_SEARCH_RADIUS,
+      (plantEntity) => (PlantStats.biomass[plantEntity] || 0) > 0.1,
+    )
+    if (!plant) return null
+    const plantPos = { x: Position.x[plant.entity], y: Position.y[plant.entity] }
+    return wrapToBounds(ctx, offsetFromCenter(ctx, plantPos, me, 24))
+  }
+  if (choice === 'fertilizer') {
+    const fertilizer = findNearestIndexed(
+      ctx,
+      ctx.fertilizerIndex,
+      ctx.fertilizers,
+      me,
+      HOUSING_SEARCH_RADIUS,
+      (fertilizerEntity) => (Fertilizer.nutrients[fertilizerEntity] || 0) > 0.1,
+    )
+    if (!fertilizer) return null
+    const fertilizerPos = { x: Position.x[fertilizer.entity], y: Position.y[fertilizer.entity] }
+    const radius = Math.max(Fertilizer.radius[fertilizer.entity] || 0, 18)
+    const desired = Math.max(18, radius * 0.6)
+    return wrapToBounds(ctx, offsetFromCenter(ctx, fertilizerPos, me, desired))
+  }
+
+  const nearest = findNearestTerrain(ctx, me, HOUSING_SEARCH_RADIUS)
+  if (!nearest) return null
+  const dist = Math.sqrt(nearest.distSq)
+  if (dist >= OPEN_FIELD_CLEARANCE) return null
+  const dx = me.x - nearest.position.x
+  const dy = me.y - nearest.position.y
+  const len = Math.sqrt(dx * dx + dy * dy) || 1
+  const push = OPEN_FIELD_CLEARANCE - dist + 18
+  return wrapToBounds(ctx, { x: me.x + (dx / len) * push, y: me.y + (dy / len) * push })
+}
+
+function decodeHousingPreference(value: number): HousingPreference {
+  if (value < 0.25) return 'rock'
+  if (value < 0.5) return 'open'
+  if (value < 0.75) return 'plants'
+  return 'fertilizer'
+}
+
+function findNearestTerrain(
+  ctx: SimulationContext,
+  position: { x: number; y: number },
+  radius: number,
+): { position: { x: number; y: number }; distSq: number } | null {
+  const rock = findNearestIndexed(ctx, ctx.rockIndex, ctx.rocks, position, radius)
+  const plant = findNearestIndexed(ctx, ctx.plantIndex, ctx.plants, position, radius)
+  const fertilizer = findNearestIndexed(ctx, ctx.fertilizerIndex, ctx.fertilizers, position, radius)
+  let best: { position: { x: number; y: number }; distSq: number } | null = null
+  ;[rock, plant, fertilizer].forEach((result) => {
+    if (!result) return
+    const pos = { x: Position.x[result.entity], y: Position.y[result.entity] }
+    if (!best || result.distSq < best.distSq) {
+      best = { position: pos, distSq: result.distSq }
+    }
+  })
+  return best
+}
+
+function findNearestIndexed(
+  ctx: SimulationContext,
+  index: SpatialIndex,
+  map: Map<number, number>,
+  position: { x: number; y: number },
+  radius: number,
+  predicate?: (entity: number) => boolean,
+): { id: number; entity: number; distSq: number } | null {
+  if (map.size === 0) return null
+  const candidates = index.query(position, radius)
+  let bestId: number | null = null
+  let bestEntity: number | null = null
+  let bestDist = Infinity
+  candidates.forEach((bucket) => {
+    const candidateEntity = map.get(bucket.id)
+    if (candidateEntity === undefined) return
+    if (predicate && !predicate(candidateEntity)) return
+    const dx = Position.x[candidateEntity] - position.x
+    const dy = Position.y[candidateEntity] - position.y
+    const distSq = dx * dx + dy * dy
+    if (distSq <= radius * radius && distSq < bestDist) {
+      bestDist = distSq
+      bestId = bucket.id
+      bestEntity = candidateEntity
+    }
+  })
+  return bestId !== null && bestEntity !== null ? { id: bestId, entity: bestEntity, distSq: bestDist } : null
+}
+
+function offsetFromCenter(
+  ctx: SimulationContext,
+  center: { x: number; y: number },
+  current: { x: number; y: number },
+  desiredRadius: number,
+): { x: number; y: number } {
+  const dx = current.x - center.x
+  const dy = current.y - center.y
+  const dist = Math.sqrt(dx * dx + dy * dy)
+  if (dist > 0.001) {
+    const scale = desiredRadius / dist
+    return { x: center.x + dx * scale, y: center.y + dy * scale }
+  }
+  const angle = ctx.rng() * Math.PI * 2
+  return { x: center.x + Math.cos(angle) * desiredRadius, y: center.y + Math.sin(angle) * desiredRadius }
+}
+
+function wrapToBounds(ctx: SimulationContext, position: { x: number; y: number }) {
+  const { x: w, y: h } = ctx.config.bounds
+  return {
+    x: ((position.x % w) + w) % w,
+    y: ((position.y % h) + h) % h,
+  }
 }
 
 function angleDiff(a: number, b: number) {

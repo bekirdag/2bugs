@@ -21,6 +21,7 @@ import { decodeMoodKind, encodeMoodKind, encodeMoodTier } from '../mood/moodCata
 import type { SimulationContext } from '../types'
 import type { ControlState, TargetRef, DNA as GenomeDNA } from '@/types/sim'
 import { clamp, distanceSquared } from '@/utils/math'
+import { clampGeneValue } from '@/ecs/genetics'
 import { corpseEdibleByStage } from '@/ecs/corpseStages'
 
 function rad(deg: number) {
@@ -348,36 +349,129 @@ function approximateBodyMass(ctx: SimulationContext, id: number, entity: number)
 }
 
 export function perceptionSystem(ctx: SimulationContext, controls: ControlState) {
-  const tick = ctx.tick
-  // Run perception every other tick to reduce load
-  if (tick % 2 === 1) return
-
   ctx.agents.forEach((entity, id) => {
     const genome = ctx.genomes.get(id)
+    if (!genome) return
+    if (!genome) return
     const birthTick = ctx.birthTick.get(id) ?? ctx.tick
     const yearTicks = Math.max(1, ctx.yearTicks || 2400)
     const ageYears = Math.max(0, ctx.tick - birthTick) / yearTicks
-    const maturityAgeYears = clamp(genome?.maturityAgeYears ?? 1, 1, 20)
-    const isMature = ageYears >= maturityAgeYears
-    const escapeDuration = clamp(genome?.escapeDuration ?? 2, 0.5, 12)
+    const reproductionMaturityAgeYears = clamp(
+      genome?.reproductionMaturityAgeYears ?? genome?.maturityAgeYears ?? 1,
+      0.1,
+      6,
+    )
+    const isMature = ageYears >= reproductionMaturityAgeYears
+    const escapeDurationMin = Math.min(genome.fleeEscapeDurationMin, genome.fleeEscapeDurationMax)
+    const escapeDurationMax = Math.max(genome.fleeEscapeDurationMin, genome.fleeEscapeDurationMax)
+    const escapeDuration = clamp(genome.escapeDuration, escapeDurationMin, escapeDurationMax)
+    const escapeTendencyMin = Math.min(genome.fleeEscapeTendencyMin, genome.fleeEscapeTendencyMax)
+    const escapeTendencyMax = Math.max(genome.fleeEscapeTendencyMin, genome.fleeEscapeTendencyMax)
+    const escapeTendency = clamp(genome.escapeTendency, escapeTendencyMin, escapeTendencyMax)
     const lingerRate = clamp(genome?.lingerRate ?? 0.5, 0, 1)
     const attentionSpan = clamp(genome?.attentionSpan ?? 0.5, 0.1, 2)
 
     const stress = Mood.stress[entity]
     const focus = Mood.focus[entity]
-    const hungerThreshold = genome?.hungerThreshold ?? Energy.metabolism[entity] * 8
+    const hungerThreshold = clampGeneValue(
+      'hungerThreshold',
+      genome.hungerThreshold ?? DNA.hungerThreshold[entity] ?? 0,
+    )
     const hungerLine = hungerThreshold + Energy.sleepDebt[entity]
     const hungerRatio = clamp(Energy.value[entity] / Math.max(hungerLine, 1), 0, 1)
+    const eatingGreed = clamp(genome.eatingGreed, 0, 1)
+    const greedHungerOffset = clamp(genome.greedHungerOffset, 0, 1)
+    const plantHungerBoostThreshold = clamp(genome.plantHungerBoostThreshold, 0, 1)
+    const plantHungerBoost = clamp(genome.plantHungerBoost, 1, 2)
+    const grazeTargetMinBiomass = clamp(genome.grazeTargetMinBiomass, 0, 1)
+    const grazeHungerRatioThreshold = clamp(genome.grazeHungerRatioThreshold, 0, 2)
+    const grazeHungerRatioNoPreyThreshold = clamp(genome.grazeHungerRatioNoPreyThreshold, 0, 2)
+    const grazeTargetWeightBase = clamp(genome.grazeTargetWeightBase, 0, 4)
+    const grazeTargetFatCapacityWeight = clamp(genome.grazeTargetFatCapacityWeight, 0, 1)
+    const grazeTargetHungerBoostBase = clamp(genome.grazeTargetHungerBoostBase, 0, 2)
+    const grazeDistanceFloor = clamp(genome.grazeDistanceFloor, 0.1, 12)
+    const huntPreyHungerRatioThreshold = clamp(genome.huntPreyHungerRatioThreshold, 0, 2)
+    const huntTargetDistanceFloor = clamp(genome.huntTargetDistanceFloor, 0.1, 12)
+    const huntTargetFocusBase = clamp(genome.huntTargetFocusBase, 0, 2)
+    const huntTargetFocusScale = clamp(genome.huntTargetFocusScale, 0, 2)
+    const huntTargetAggressionBase = clamp(genome.huntTargetAggressionBase, 0, 2)
+    const huntTargetAggressionScale = clamp(genome.huntTargetAggressionScale, 0, 2)
+    const huntTargetAwarenessBase = clamp(genome.huntTargetAwarenessBase, 0, 2)
+    const huntTargetAwarenessScale = clamp(genome.huntTargetAwarenessScale, 0, 2)
+    const huntPreySizeBandScale = clamp(genome.huntPreySizeBandScale, 0, 2)
+    const huntPreySizeBandOffset = clamp(genome.huntPreySizeBandOffset, 0, 1)
+    const huntPreySizeBandMin = clamp(genome.huntPreySizeBandMin, 0.05, 2)
+    const huntPreySizeBandMax = clamp(genome.huntPreySizeBandMax, 0.1, 3)
+    const huntPreySizeBiasBase = clamp(genome.huntPreySizeBiasBase, 0, 2)
+    const huntPreySizeBiasMin = clamp(genome.huntPreySizeBiasMin, 0, 1)
+    const huntPreySizeBiasMax = clamp(genome.huntPreySizeBiasMax, 0.2, 2)
+    const huntPreySizeOverageBase = clamp(genome.huntPreySizeOverageBase, 0, 2)
+    const huntPreySizeOverageThreshold = clamp(genome.huntPreySizeOverageThreshold, 0.4, 2)
+    const huntPreySizeOverageMin = clamp(genome.huntPreySizeOverageMin, 0, 1)
+    const huntPreySizeOverageMax = clamp(genome.huntPreySizeOverageMax, 0.2, 2)
+    const huntStickinessLingerBase = clamp(genome.huntStickinessLingerBase, 0, 2)
+    const huntStickinessLingerScale = clamp(genome.huntStickinessLingerScale, 0, 2)
+    const huntStickinessAttentionBase = clamp(genome.huntStickinessAttentionBase, 0, 2)
+    const huntStickinessAttentionScale = clamp(genome.huntStickinessAttentionScale, 0, 2)
+    const huntCarrionHungerRatioThreshold = clamp(genome.huntCarrionHungerRatioThreshold, 0, 2)
+    const huntCarrionNutrientsMin = clamp(genome.huntCarrionNutrientsMin, 0, 2)
+    const huntCarrionDistanceFloor = clamp(genome.huntCarrionDistanceFloor, 0.1, 12)
+    const huntCarrionFocusBase = clamp(genome.huntCarrionFocusBase, 0, 2)
+    const huntCarrionFocusScale = clamp(genome.huntCarrionFocusScale, 0, 2)
+    const huntCarrionHungerBase = clamp(genome.huntCarrionHungerBase, 0, 2)
+    const huntCarrionHungerScale = clamp(genome.huntCarrionHungerScale, 0, 3)
+    const huntCarrionAffinityBase = clamp(genome.huntCarrionAffinityBase, 0, 2)
+    const huntCarrionAffinityScale = clamp(genome.huntCarrionAffinityScale, 0, 2)
+    const huntCarrionNutrientBase = clamp(genome.huntCarrionNutrientBase, 0, 2)
+    const huntCarrionNutrientScale = clamp(genome.huntCarrionNutrientScale, 0, 2)
+    const huntCarrionNutrientNorm = clamp(genome.huntCarrionNutrientNorm, 1, 2000)
+    const huntCarrionNutrientClampMax = clamp(genome.huntCarrionNutrientClampMax, 0.1, 4)
+    const huntCarrionPreferWeight = clamp(genome.huntCarrionPreferWeight, 0, 2)
+    const fleeSizeRatioOffset = clamp(genome.fleeSizeRatioOffset, 0.1, 2)
+    const fleeSizeDeltaMin = clamp(genome.fleeSizeDeltaMin, -2, 0)
+    const fleeSizeDeltaMax = clamp(genome.fleeSizeDeltaMax, 0.2, 6)
+    const fleeSizeMultiplierBase = clamp(genome.fleeSizeMultiplierBase, 0.4, 2.4)
+    const fleeSizeMultiplierMin = clamp(genome.fleeSizeMultiplierMin, 0.01, 1)
+    const fleeSizeMultiplierMax = clamp(genome.fleeSizeMultiplierMax, 0.5, 6)
+    const fleePredatorScaleOffset = clamp(genome.fleePredatorScaleOffset, 0.1, 2)
+    const fleePredatorScaleRange = clamp(genome.fleePredatorScaleRange, 0.1, 2)
+    const fleeThreatProximityBase = clamp(genome.fleeThreatProximityBase, 0, 2)
+    const fleeThreatDistanceFloor = clamp(genome.fleeThreatDistanceFloor, 0.1, 8)
+    const fleeThreatProximityWeight = clamp(genome.fleeThreatProximityWeight, 0, 3)
+    const fleeThreatAwarenessWeight = clamp(genome.fleeThreatAwarenessWeight, 0, 3)
+    const fleeThreatCowardiceWeight = clamp(genome.fleeThreatCowardiceWeight, 0, 3)
+    const fleeThreatScoreMax = clamp(genome.fleeThreatScoreMax, 0.5, 10)
+    const fleeCowardiceClampMax = clamp(genome.fleeCowardiceClampMax, 0.2, 4)
+    const fleeSpeedFloor = clamp(genome.fleeSpeedFloor, 0.1, 12)
+    const fleeTriggerAwarenessWeight = clamp(genome.fleeTriggerAwarenessWeight, 0, 3)
+    const fleeTriggerFearWeight = clamp(genome.fleeTriggerFearWeight, 0, 3)
+    const fleeTriggerCourageWeight = clamp(genome.fleeTriggerCourageWeight, 0, 3)
+    const fleeTriggerNormalization = clamp(genome.fleeTriggerNormalization, 0.5, 6)
+    const fleeTriggerClampMin = clamp(genome.fleeTriggerClampMin, 0, 1)
+    const fleeTriggerClampMax = clamp(genome.fleeTriggerClampMax, 0.5, 4)
+    const fleeDangerTimerMin = clamp(genome.fleeDangerTimerMin, 0, 6)
+    const fleeDangerHoldIntensityOffset = clamp(genome.fleeDangerHoldIntensityOffset, 0, 2)
+    const fleeDangerHoldIntensityMin = clamp(genome.fleeDangerHoldIntensityMin, 0, 2)
+    const fleeDangerHoldIntensityMax = clamp(genome.fleeDangerHoldIntensityMax, 0.5, 5)
+    const fleeDangerIntensityBase = clamp(genome.fleeDangerIntensityBase, 0, 2)
+    const fleeDangerDecayStep = clamp(genome.fleeDangerDecayStep, 0.001, 0.5)
     const fatigue = clamp(Mood.fatigue[entity], 0, 1)
-    const sleepPressure = clamp(Energy.sleepDebt[entity] / 5, 0, 1)
+    const sleepDebtMax = Math.max(clampGeneValue('sleepDebtMax', genome.sleepDebtMax ?? 0), 0.1)
+    const sleepPressure = clamp(Energy.sleepDebt[entity] / sleepDebtMax, 0, 1)
     const inReproCooldown = ModeState.sexCooldown[entity] > 0 || ctx.pregnancies.has(id)
-    const libidoRatio = inReproCooldown
-      ? 0
-      : clamp(
-          Reproduction.libido[entity] / Math.max(Reproduction.libidoThreshold[entity] || 0.6, 0.1),
-          0,
-          1,
-        )
+    const libidoThreshold = clampGeneValue('libidoThreshold', genome.libidoThreshold)
+    const libidoPressureBase = clampGeneValue('libidoPressureBase', genome.libidoPressureBase)
+    const libidoPressureStabilityWeight = clampGeneValue(
+      'libidoPressureStabilityWeight',
+      genome.libidoPressureStabilityWeight,
+    )
+    const curiosityDriveBase = genome.curiosityDriveBase ?? 0.7
+    const curiosityDriveStabilityWeight = genome.curiosityDriveStabilityWeight ?? 0.4
+    const exploreThreshold = genome.exploreThreshold ?? 0.52
+    const idleDriveBase = genome.idleDriveBase ?? 0.6
+    const idleDriveStabilityWeight = genome.idleDriveStabilityWeight ?? 0.6
+    const idleThreshold = genome.idleThreshold ?? 0.55
+    const libidoRatio = inReproCooldown ? 0 : clamp(Reproduction.libido[entity] / libidoThreshold, 0, 1)
     const libidoForMood = isMature ? libidoRatio : 0
     const aggression = clamp((DNA.aggression[entity] ?? 0.4) + (controls.aggressionBias ?? 0), 0, 1)
     const curiosity = clamp((DNA.curiosity[entity] ?? 0.3) + (controls.curiosityBias ?? 0), 0.05, 1)
@@ -398,13 +492,12 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
     const mePos = { x: Position.x[entity], y: Position.y[entity] }
     const visualGeneRange = DNA.visionRange[entity] * (1 + (awareness - 0.5) * 0.6)
     const heading = Heading.angle[entity]
-    const awarenessGene = genome?.awareness ?? DNA.awareness[entity] ?? 0.5
+    const awarenessGene = genome.awareness ?? DNA.awareness[entity] ?? 0.5
     const senses = buildSenseProfile(genome, archetype, awarenessGene, heading, visualGeneRange)
     const neighbors = ctx.agentIndex.query(mePos, senses.senseRange)
 
     const myBodyMass = approximateBodyMass(ctx, id, entity)
-    const preySizeTargetRatio =
-      archetype === 'hunter' ? clamp(genome?.preySizeTargetRatio ?? 0.6, 0.05, 1.5) : 1
+    const preySizeTargetRatio = archetype === 'hunter' ? clamp(genome.preySizeTargetRatio, 0.05, 1.5) : 1
 
     let threatLevel = 0
     let predatorTarget: TargetRef | null = null
@@ -416,13 +509,8 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
     let allyCount = 0
     let allyProximity = 0
 
-    const dangerRadius = genome?.dangerRadius ?? senses.senseRange
-    const escapeTendency = clamp(
-      genome?.escapeTendency ?? DNA.cowardice[entity] ?? DNA.fear[entity] ?? 0.3,
-      0.01,
-      2,
-    )
-    const courageGene = genome?.bravery ?? 0.5
+    const dangerRadius = genome.dangerRadius ?? senses.senseRange
+    const courageGene = genome.bravery
     let forcedFlee = false
     neighbors.forEach((bucket) => {
       if (bucket.id === id) return
@@ -460,8 +548,12 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
       const otherMass = approximateBodyMass(ctx, bucket.id, otherEntity)
       const sizeRatio = otherMass / Math.max(myBodyMass, 0.001)
       // `sizeFear` is the sensitivity to size differences. Larger opponents are scarier; much smaller ones are discounted.
-      const sizeDelta = clamp(sizeRatio - 1, -0.95, 3)
-      const sizeMultiplier = clamp(1 + sizeDelta * sizeFear, 0.05, 3)
+      const sizeDelta = clamp(sizeRatio - fleeSizeRatioOffset, fleeSizeDeltaMin, fleeSizeDeltaMax)
+      const sizeMultiplier = clamp(
+        fleeSizeMultiplierBase + sizeDelta * sizeFear,
+        fleeSizeMultiplierMin,
+        fleeSizeMultiplierMax,
+      )
       const potentialFood = dietAgents.includes(otherType)
 
       // Treat likely prey as non-threatening (otherwise timid hunters will flee from prey).
@@ -476,19 +568,25 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
           threatBase = speciesFear
           if (otherType === 'hunter' && archetype !== 'hunter') {
             // If the "predator" is much smaller than us, we should not overreact.
-            const predatorScale = clamp((sizeRatio - 0.6) / 0.6, 0, 1)
-            threatBase += (DNA.fear[entity] ?? 0.3) * predatorScale
+            const predatorScale = clamp((sizeRatio - fleePredatorScaleOffset) / fleePredatorScaleRange, 0, 1)
+            threatBase += genome.fear * predatorScale
           }
         } else if (!sameFamily) {
           threatBase = conspecificFear
         }
 
-        const cowardice = clamp(DNA.cowardice[entity] ?? DNA.fear[entity] ?? 0.3, 0, 2)
-        const proximity = clamp(1 - dist / Math.max(senses.senseRange, 1), 0, 1)
-        const threatScore = clamp(
-          (threatBase + cowardice) * (proximity + awarenessGene) * sizeMultiplier,
+        const cowardice = clamp(genome.cowardice, 0, fleeCowardiceClampMax)
+        const proximity = clamp(
+          fleeThreatProximityBase - dist / Math.max(senses.senseRange, fleeThreatDistanceFloor),
           0,
-          5,
+          1,
+        )
+        const threatScore = clamp(
+          (threatBase + cowardice * fleeThreatCowardiceWeight) *
+            (proximity * fleeThreatProximityWeight + awarenessGene * fleeThreatAwarenessWeight) *
+            sizeMultiplier,
+          0,
+          fleeThreatScoreMax,
         )
 
         if (threatScore > threatLevel && dist < closestPredatorDist) {
@@ -503,24 +601,41 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
             ModeState.dangerTimer[entity] = Math.max(ModeState.dangerTimer[entity], escapeDuration)
             ModeState.dangerTimer[entity] = Math.max(
               ModeState.dangerTimer[entity],
-              dangerRadius / Math.max(DNA.baseSpeed[entity], 1),
+              dangerRadius / Math.max(DNA.baseSpeed[entity], fleeSpeedFloor),
             )
             forcedFlee = true
           }
         }
       }
 
-      if (dietAgents.includes(otherType) && hungerRatio < 1.1) {
+      if (dietAgents.includes(otherType) && hungerRatio < huntPreyHungerRatioThreshold) {
         const baseWeight =
-          (1 / Math.max(dist, 1)) * (0.6 + focus * 0.4) * (1 + aggression * 0.4) * awareness
-        let sizeBias = 1
+          (1 / Math.max(dist, huntTargetDistanceFloor)) *
+          (huntTargetFocusBase + focus * huntTargetFocusScale) *
+          (huntTargetAggressionBase + aggression * huntTargetAggressionScale) *
+          (huntTargetAwarenessBase + awareness * huntTargetAwarenessScale)
+        let sizeBias = huntPreySizeBiasBase
         if (archetype === 'hunter' && otherType === 'prey') {
           const preyMass = approximateBodyMass(ctx, bucket.id, otherEntity)
           const ratio = preyMass / Math.max(myBodyMass, 0.001)
-          const band = clamp(preySizeTargetRatio * 0.8 + 0.15, 0.15, 1.5)
-          sizeBias = clamp(1 - Math.abs(ratio - preySizeTargetRatio) / band, 0.05, 1.15)
+          const band = clamp(
+            preySizeTargetRatio * huntPreySizeBandScale + huntPreySizeBandOffset,
+            huntPreySizeBandMin,
+            huntPreySizeBandMax,
+          )
+          sizeBias = clamp(
+            huntPreySizeBiasBase - Math.abs(ratio - preySizeTargetRatio) / band,
+            huntPreySizeBiasMin,
+            huntPreySizeBiasMax,
+          )
           // Strongly penalize taking on prey larger than self.
-          if (ratio > 1) sizeBias *= clamp(1 / ratio, 0.05, 1)
+          if (ratio > huntPreySizeOverageThreshold) {
+            sizeBias *= clamp(
+              huntPreySizeOverageBase / ratio,
+              huntPreySizeOverageMin,
+              huntPreySizeOverageMax,
+            )
+          }
         }
         const weight = baseWeight * sizeBias
         if (weight > bestPreyWeight) {
@@ -534,7 +649,9 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
     }
 
     // Target stickiness: `lingerRate` makes agents less likely to thrash targets when weights are close.
-    const stickiness = (1 + lingerRate * 0.75) * (1 + attentionSpan * 0.4)
+    const stickiness =
+      (huntStickinessLingerBase + lingerRate * huntStickinessLingerScale) *
+      (huntStickinessAttentionBase + attentionSpan * huntStickinessAttentionScale)
     if (ModeState.targetType[entity] === 1) {
       const currentTargetId = ModeState.targetId[entity]
       const currentTargetEntity = ctx.agents.get(currentTargetId)
@@ -545,14 +662,31 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
           const dist = Math.sqrt(distanceSquared(mePos, currentPos))
           if (dist <= senses.senseRange) {
             const currentWeight =
-              (1 / Math.max(dist, 1)) * (0.6 + focus * 0.4) * (1 + aggression * 0.4) * awareness
-            let sizeBias = 1
+              (1 / Math.max(dist, huntTargetDistanceFloor)) *
+              (huntTargetFocusBase + focus * huntTargetFocusScale) *
+              (huntTargetAggressionBase + aggression * huntTargetAggressionScale) *
+              (huntTargetAwarenessBase + awareness * huntTargetAwarenessScale)
+            let sizeBias = huntPreySizeBiasBase
             if (archetype === 'hunter' && currentType === 'prey') {
               const preyMass = approximateBodyMass(ctx, currentTargetId, currentTargetEntity)
               const ratio = preyMass / Math.max(myBodyMass, 0.001)
-              const band = clamp(preySizeTargetRatio * 0.8 + 0.15, 0.15, 1.5)
-              sizeBias = clamp(1 - Math.abs(ratio - preySizeTargetRatio) / band, 0.05, 1.15)
-              if (ratio > 1) sizeBias *= clamp(1 / ratio, 0.05, 1)
+              const band = clamp(
+                preySizeTargetRatio * huntPreySizeBandScale + huntPreySizeBandOffset,
+                huntPreySizeBandMin,
+                huntPreySizeBandMax,
+              )
+              sizeBias = clamp(
+                huntPreySizeBiasBase - Math.abs(ratio - preySizeTargetRatio) / band,
+                huntPreySizeBiasMin,
+                huntPreySizeBiasMax,
+              )
+              if (ratio > huntPreySizeOverageThreshold) {
+                sizeBias *= clamp(
+                  huntPreySizeOverageBase / ratio,
+                  huntPreySizeOverageMin,
+                  huntPreySizeOverageMax,
+                )
+              }
             }
             if (currentWeight * stickiness >= bestPreyWeight) {
               bestPreyTarget = { kind: 'agent', id: currentTargetId }
@@ -564,17 +698,17 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
     }
 
     const isScavenger = archetype === 'scavenger'
-    const scavengerAffinity = clamp(isScavenger ? 1 : (genome?.scavengerAffinity ?? 0), 0, 1)
+    const scavengerAffinity = clamp(isScavenger ? 1 : (genome.scavengerAffinity ?? 0), 0, 1)
     if (
       (dietAgents.length || isScavenger) &&
-      (hungerRatio < 0.85 || bestPreyTarget === null || archetype === 'hunter')
+      (hungerRatio < huntCarrionHungerRatioThreshold || bestPreyTarget === null || archetype === 'hunter')
     ) {
       const corpseCandidates = ctx.corpseIndex.query(mePos, senses.senseRange)
       corpseCandidates.forEach((bucket) => {
         const corpseEntity = ctx.corpses.get(bucket.id)
         if (corpseEntity === undefined) return
         const nutrients = Corpse.nutrients[corpseEntity] || 0
-        if (nutrients <= 0.1) return
+        if (nutrients <= huntCarrionNutrientsMin) return
         const corpseArchetype = Corpse.archetype[corpseEntity]
           ? decodeArchetype(Corpse.archetype[corpseEntity])
           : undefined
@@ -589,11 +723,13 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
         if (ctx.rng() > seenChance) return
         const hungerNeed = clamp(1 - hungerRatio, 0, 1)
         const weight =
-          (1 / Math.max(dist, 1)) *
-          (0.65 + focus * 0.35) *
-          (0.85 + hungerNeed * 1.3) *
-          (0.85 + scavengerAffinity * 0.6) *
-          (0.7 + clamp(nutrients / 420, 0, 1.5))
+          (1 / Math.max(dist, huntCarrionDistanceFloor)) *
+          (huntCarrionFocusBase + focus * huntCarrionFocusScale) *
+          (huntCarrionHungerBase + hungerNeed * huntCarrionHungerScale) *
+          (huntCarrionAffinityBase + scavengerAffinity * huntCarrionAffinityScale) *
+          (huntCarrionNutrientBase +
+            clamp(nutrients / huntCarrionNutrientNorm, 0, huntCarrionNutrientClampMax) *
+              huntCarrionNutrientScale)
         if (weight > bestCarrionWeight) {
           bestCarrionWeight = weight
           bestCarrionTarget = { kind: 'corpse', id: bucket.id }
@@ -606,7 +742,7 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
       const corpseEntity = ctx.corpses.get(currentCorpseId)
       if (
         corpseEntity !== undefined &&
-        (Corpse.nutrients[corpseEntity] || 0) > 0.1 &&
+        (Corpse.nutrients[corpseEntity] || 0) > huntCarrionNutrientsMin &&
         corpseEdibleByStage(
           Corpse.stage[corpseEntity],
           archetype,
@@ -620,10 +756,10 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
         const dist = Math.sqrt(dx * dx + dy * dy)
         if (dist <= senses.senseRange) {
           const currentWeight =
-            (1 / Math.max(dist, 1)) *
-            (0.65 + focus * 0.35) *
-            (0.85 + clamp(1 - hungerRatio, 0, 1) * 1.3) *
-            (0.85 + scavengerAffinity * 0.6)
+            (1 / Math.max(dist, huntCarrionDistanceFloor)) *
+            (huntCarrionFocusBase + focus * huntCarrionFocusScale) *
+            (huntCarrionHungerBase + clamp(1 - hungerRatio, 0, 1) * huntCarrionHungerScale) *
+            (huntCarrionAffinityBase + scavengerAffinity * huntCarrionAffinityScale)
           if (currentWeight * stickiness >= bestCarrionWeight) {
             bestCarrionTarget = { kind: 'corpse', id: currentCorpseId }
             bestCarrionWeight = currentWeight
@@ -632,26 +768,43 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
       }
     }
 
-    if (bestCarrionTarget && (bestPreyTarget === null || bestCarrionWeight > bestPreyWeight * 0.9)) {
+    if (
+      bestCarrionTarget &&
+      (bestPreyTarget === null || bestCarrionWeight > bestPreyWeight * huntCarrionPreferWeight)
+    ) {
       bestPreyTarget = bestCarrionTarget
       bestPreyWeight = Math.max(bestPreyWeight, bestCarrionWeight)
     }
 
     // Primitive flight reflex: override any ongoing behaviour if predator is close enough
-    const fear = DNA.fear[entity] ?? 0.3
-    const fleeTrigger = dangerRadius * clamp((awarenessGene + fear + courageGene) / 3, 0.1, 2)
+    const fear = genome.fear
+    const fleeTrigger =
+      dangerRadius *
+      clamp(
+        (awarenessGene * fleeTriggerAwarenessWeight +
+          fear * fleeTriggerFearWeight +
+          courageGene * fleeTriggerCourageWeight) /
+          fleeTriggerNormalization,
+        fleeTriggerClampMin,
+        fleeTriggerClampMax,
+      )
     if (predatorTarget && closestPredatorDist <= fleeTrigger) {
       threatLevel = Math.max(threatLevel, escapeTendency)
     }
 
     let bestPlantTarget: TargetRef | null = null
     let bestPlantWeight = -Infinity
-    if (eatsPlants && (hungerRatio < 0.9 || hungerRatio < 1 && bestPreyTarget === null)) {
+    const effectiveHungerRatio = clamp(hungerRatio - eatingGreed * greedHungerOffset, 0, 1)
+    if (
+      eatsPlants &&
+      (effectiveHungerRatio < grazeHungerRatioThreshold ||
+        (effectiveHungerRatio < grazeHungerRatioNoPreyThreshold && bestPreyTarget === null))
+    ) {
       const plantCandidates = ctx.plantIndex.query(mePos, senses.senseRange)
       plantCandidates.forEach((bucket) => {
         const plantEntity = ctx.plants.get(bucket.id)
         if (plantEntity === undefined) return
-        if ((PlantStats.biomass[plantEntity] || 0) <= 0.12) return
+        if ((PlantStats.biomass[plantEntity] || 0) <= grazeTargetMinBiomass) return
         const plantPos = { x: Position.x[plantEntity], y: Position.y[plantEntity] }
         const dx = plantPos.x - mePos.x
         const dy = plantPos.y - mePos.y
@@ -659,8 +812,12 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
         const occ = occlusionFactors(ctx, mePos, plantPos)
         const seenChance = combinedDetectionChance(senses, dx, dy, dist, awarenessGene, 0, ctx.rng, occ)
         if (ctx.rng() > seenChance) return
+        const hungerBoost =
+          hungerRatio < plantHungerBoostThreshold ? plantHungerBoost : grazeTargetHungerBoostBase
         const weight =
-          (Energy.fatCapacity[entity] * 0.2 + 1) * (1 / Math.max(dist, 1)) * (hungerRatio < 0.55 ? 1.2 : 1)
+          (Energy.fatCapacity[entity] * grazeTargetFatCapacityWeight + grazeTargetWeightBase) *
+          (1 / Math.max(dist, grazeDistanceFloor)) *
+          hungerBoost
         if (weight > bestPlantWeight) {
           bestPlantWeight = weight
           bestPlantTarget = { kind: 'plant', id: bucket.id }
@@ -676,8 +833,12 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
           distanceSquared(mePos, { x: Position.x[currentPlantEntity], y: Position.y[currentPlantEntity] }),
         )
         if (dist <= senses.senseRange) {
+          const hungerBoost =
+            hungerRatio < plantHungerBoostThreshold ? plantHungerBoost : grazeTargetHungerBoostBase
           const currentWeight =
-            (Energy.fatCapacity[entity] * 0.2 + 1) * (1 / Math.max(dist, 1)) * (hungerRatio < 0.55 ? 1.2 : 1)
+            (Energy.fatCapacity[entity] * grazeTargetFatCapacityWeight + grazeTargetWeightBase) *
+            (1 / Math.max(dist, grazeDistanceFloor)) *
+            hungerBoost
           if (currentWeight * stickiness >= bestPlantWeight) {
             bestPlantTarget = { kind: 'plant', id: currentPlantId }
             bestPlantWeight = currentWeight
@@ -687,7 +848,6 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
     }
 
     const socialCohesion = allyCount === 0 ? 0 : clamp(allyProximity / allyCount, 0, 1)
-    const eatingGreed = clamp(genome?.eatingGreed ?? 0.5, 0, 1)
     const digestionBaseline = 120 + myBodyMass * 90
     const metabolismGene = clamp(DNA.metabolism[entity] ?? 8, 2, 16)
     const metabolismFactor = clamp(1.2 - (metabolismGene - 8) * 0.05, 0.6, 1.4)
@@ -698,28 +858,141 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
       0,
       1,
     )
-    const staminaGene = clamp(DNA.stamina[entity] ?? 1, 0.4, 1.6)
-    const staminaFactor = clamp(1.15 - (staminaGene - 1) * 0.6, 0.5, 1.5)
-    const sleepEfficiency = clamp(DNA.sleepEfficiency[entity] ?? 0.8, 0.4, 1.2)
-    const efficiencyFactor = clamp(1.1 - (sleepEfficiency - 0.8) * 0.5, 0.6, 1.4)
-    const recoveryPressure = clamp(fatigue * staminaFactor + sleepPressure * 0.35 * efficiencyFactor, 0, 1)
+    const staminaGene = clampGeneValue('stamina', DNA.stamina[entity] ?? 0)
+    const sleepStaminaFactorBase = clampGeneValue('sleepStaminaFactorBase', genome.sleepStaminaFactorBase ?? 0)
+    const sleepStaminaFactorOffset = clampGeneValue('sleepStaminaFactorOffset', genome.sleepStaminaFactorOffset ?? 0)
+    const sleepStaminaFactorScale = clampGeneValue('sleepStaminaFactorScale', genome.sleepStaminaFactorScale ?? 0)
+    const sleepStaminaFactorMin = clampGeneValue('sleepStaminaFactorMin', genome.sleepStaminaFactorMin ?? 0)
+    const sleepStaminaFactorMax = clampGeneValue('sleepStaminaFactorMax', genome.sleepStaminaFactorMax ?? 0)
+    const staminaFactor = clamp(
+      sleepStaminaFactorBase - (staminaGene - sleepStaminaFactorOffset) * sleepStaminaFactorScale,
+      sleepStaminaFactorMin,
+      sleepStaminaFactorMax,
+    )
+    const sleepEfficiency = clampGeneValue('sleepEfficiency', genome.sleepEfficiency ?? 0)
+    const sleepEfficiencyBaseline = clampGeneValue('sleepEfficiencyBaseline', genome.sleepEfficiencyBaseline ?? 0)
+    const sleepEfficiencyFactorBase = clampGeneValue('sleepEfficiencyFactorBase', genome.sleepEfficiencyFactorBase ?? 0)
+    const sleepEfficiencyEffectScale = clampGeneValue(
+      'sleepEfficiencyEffectScale',
+      genome.sleepEfficiencyEffectScale ?? 0,
+    )
+    const sleepEfficiencyFactorMin = clampGeneValue('sleepEfficiencyFactorMin', genome.sleepEfficiencyFactorMin ?? 0)
+    const sleepEfficiencyFactorMax = clampGeneValue('sleepEfficiencyFactorMax', genome.sleepEfficiencyFactorMax ?? 0)
+    const efficiencyFactor = clamp(
+      sleepEfficiencyFactorBase - (sleepEfficiency - sleepEfficiencyBaseline) * sleepEfficiencyEffectScale,
+      sleepEfficiencyFactorMin,
+      sleepEfficiencyFactorMax,
+    )
+    const sleepPressureRecoveryWeight = clampGeneValue(
+      'sleepPressureRecoveryWeight',
+      genome.sleepPressureRecoveryWeight ?? 0,
+    )
+    const recoveryPressure = clamp(
+      fatigue * staminaFactor + sleepPressure * sleepPressureRecoveryWeight * efficiencyFactor,
+      0,
+      1,
+    )
+    const foragePressureBase = clampGeneValue('foragePressureBase', genome.foragePressureBase ?? 0)
+    const foragePressureVolatility = clampGeneValue('foragePressureVolatility', genome.foragePressureVolatility ?? 0)
+    const greedForageThreshold = clampGeneValue('greedForageThreshold', genome.greedForageThreshold ?? 0)
+    const greedForageWeight = clampGeneValue('greedForageWeight', genome.greedForageWeight ?? 0)
+    const greedForagePressureThreshold = clampGeneValue(
+      'greedForagePressureThreshold',
+      genome.greedForagePressureThreshold,
+    )
+    const foragePressureSoftGate = clampGeneValue('foragePressureSoftGate', genome.foragePressureSoftGate ?? 0)
+    const foragePressureExhaustionBuffer = clampGeneValue(
+      'foragePressureExhaustionBuffer',
+      genome.foragePressureExhaustionBuffer,
+    )
+    const sleepPressureWeight = clampGeneValue('sleepPressureWeight', genome.sleepPressureWeight ?? 0)
+    const exhaustionPressureBase = clampGeneValue('exhaustionPressureBase', genome.exhaustionPressureBase ?? 0)
+    const exhaustionPressureStability = clampGeneValue(
+      'exhaustionPressureStability',
+      genome.exhaustionPressureStability,
+    )
+    const forageIntensityThreshold = clampGeneValue('forageIntensityThreshold', genome.forageIntensityThreshold ?? 0)
+    const sleepThresholdBase = clampGeneValue('sleepThresholdBase', genome.sleepThresholdBase ?? 0)
+    const sleepThresholdStability = clampGeneValue('sleepThresholdStability', genome.sleepThresholdStability ?? 0)
+    const digestionThresholdBase = clampGeneValue('digestionThresholdBase', genome.digestionThresholdBase ?? 0)
+    const digestionThresholdStability = clampGeneValue(
+      'digestionThresholdStability',
+      genome.digestionThresholdStability,
+    )
+    const recoveryThresholdBase = clampGeneValue('recoveryThresholdBase', genome.recoveryThresholdBase ?? 0)
+    const recoveryThresholdStability = clampGeneValue(
+      'recoveryThresholdStability',
+      genome.recoveryThresholdStability,
+    )
     const moodInput: MoodMachineInput = {
       hungerRatio,
-      forageStartRatio: clamp(genome?.forageStartRatio ?? 0.65, 0.25, 0.95),
+      forageStartRatio: clamp(genome.forageStartRatio, 0.25, 0.95),
       fatigue,
       sleepPressure,
       digestionPressure,
       recoveryPressure,
       libido: libidoForMood,
+      libidoThreshold,
+      libidoPressureBase,
+      libidoPressureStabilityWeight,
+      patrolHerdCohesionWeight: clampGeneValue('patrolHerdCohesionWeight', genome.patrolHerdCohesionWeight),
+      patrolHerdDependencyWeight: clampGeneValue('patrolHerdDependencyWeight', genome.patrolHerdDependencyWeight),
+      patrolSocialPressureBase: clampGeneValue('patrolSocialPressureBase', genome.patrolSocialPressureBase),
+      patrolSocialPressureStabilityWeight: clampGeneValue(
+        'patrolSocialPressureStabilityWeight',
+        genome.patrolSocialPressureStabilityWeight,
+      ),
+      patrolSocialThresholdBase: clampGeneValue('patrolSocialThresholdBase', genome.patrolSocialThresholdBase),
+      patrolSocialThresholdStabilityWeight: clampGeneValue(
+        'patrolSocialThresholdStabilityWeight',
+        genome.patrolSocialThresholdStabilityWeight,
+      ),
+      curiosityDriveBase,
+      curiosityDriveStabilityWeight,
+      exploreThreshold,
+      idleDriveBase,
+      idleDriveStabilityWeight,
+      idleThreshold,
+      greed: eatingGreed,
+      foragePressureBase,
+      foragePressureVolatility,
+      greedForageThreshold,
+      greedForageWeight,
+      greedForagePressureThreshold,
+      foragePressureSoftGate,
+      foragePressureExhaustionBuffer,
+      sleepPressureWeight,
+      exhaustionPressureBase,
+      exhaustionPressureStability,
+      forageIntensityThreshold,
+      sleepThresholdBase,
+      sleepThresholdStability,
+      digestionThresholdBase,
+      digestionThresholdStability,
+      recoveryThresholdBase,
+      recoveryThresholdStability,
       threatLevel: clamp(threatLevel, 0, 1),
       socialCohesion,
       curiosity,
       aggression,
-      fightPersistence: genome?.fightPersistence ?? clamp(aggression, 0.05, 1),
-      fear: DNA.fear[entity] ?? 0.3,
-      cowardice: DNA.cowardice[entity] ?? DNA.fear[entity] ?? 0.3,
-      cohesion: DNA.socialDrive[entity] ?? 0.2,
-      dependency: genome?.dependency ?? 0,
+      fightPersistence: clamp(genome.fightPersistence, 0, 1),
+      fear: genome.fear,
+      cowardice: genome.cowardice,
+      fleeFearBiasFearWeight: clamp(genome.fleeFearBiasFearWeight, 0, 1.5),
+      fleeFearBiasCowardiceWeight: clamp(genome.fleeFearBiasCowardiceWeight, 0, 1.5),
+      fleeSurvivalThreatBase: clamp(genome.fleeSurvivalThreatBase, 0, 2),
+      fleeSurvivalThreatFearScale: clamp(genome.fleeSurvivalThreatFearScale, 0, 2),
+      fleeSurvivalStabilityBase: clamp(genome.fleeSurvivalStabilityBase, 0, 2),
+      fleeSurvivalStabilityScale: clamp(genome.fleeSurvivalStabilityScale, 0, 2),
+      fleeSurvivalStressWeight: clamp(genome.fleeSurvivalStressWeight, 0, 1),
+      fleeSurvivalThresholdBase: clamp(genome.fleeSurvivalThresholdBase, 0, 1),
+      fleeSurvivalThresholdStabilityScale: clamp(genome.fleeSurvivalThresholdStabilityScale, 0, 1),
+      fleeFightDriveAggressionWeight: clamp(genome.fleeFightDriveAggressionWeight, 0, 2),
+      fleeFightDrivePersistenceWeight: clamp(genome.fleeFightDrivePersistenceWeight, 0, 2),
+      fleeBraveFearOffset: clamp(genome.fleeBraveFearOffset, 0, 1),
+      fleeBraveThreatThreshold: clamp(genome.fleeBraveThreatThreshold, 0, 1),
+      cohesion: clampGeneValue('cohesion', genome.cohesion),
+      dependency: clampGeneValue('dependency', genome.dependency),
       moodStability: DNA.moodStability[entity] ?? 0.5,
       stress,
       currentMood: decodeMoodKind(Mood.state[entity]),
@@ -733,7 +1006,7 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
     if (predatorTarget && closestPredatorDist <= fleeTrigger) {
       decision.behaviour.mode = 'flee'
       decision.behaviour.target = predatorTarget
-      ModeState.dangerTimer[entity] = Math.max(ModeState.dangerTimer[entity], Math.max(1.25, escapeDuration))
+      ModeState.dangerTimer[entity] = Math.max(ModeState.dangerTimer[entity], Math.max(fleeDangerTimerMin, escapeDuration))
     }
 
     // Scavengers only eat dead bodies: never graze plants or hunt live animals.
@@ -754,7 +1027,7 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
     } else if (decision.behaviour.mode === 'graze' && bestPlantTarget) {
       decision.behaviour.target = bestPlantTarget
     } else if (decision.behaviour.mode === 'mate') {
-      decision.behaviour.target = findMateTarget(ctx, entity, id, neighbors)
+      decision.behaviour.target = findMateTarget(ctx, entity, id)
     } else if (decision.behaviour.mode === 'patrol') {
       decision.behaviour.target = preferForageTarget(bestPreyTarget, bestPlantTarget)
     } else if (decision.behaviour.mode === 'fight') {
@@ -764,13 +1037,17 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
     applyBehaviourIntent(entity, decision.behaviour)
 
     if (decision.tier === 'survival') {
-      const survivalHold = escapeDuration * clamp(0.5 + decision.intensity, 0.5, 2)
+      const survivalHold = escapeDuration * clamp(
+        fleeDangerHoldIntensityOffset + decision.intensity,
+        fleeDangerHoldIntensityMin,
+        fleeDangerHoldIntensityMax,
+      )
       ModeState.dangerTimer[entity] = Math.max(
         ModeState.dangerTimer[entity],
-        Math.max(decision.intensity + 0.5, survivalHold),
+        Math.max(decision.intensity + fleeDangerIntensityBase, survivalHold),
       )
     } else if (ModeState.dangerTimer[entity] > 0) {
-      ModeState.dangerTimer[entity] = Math.max(0, ModeState.dangerTimer[entity] - 0.05)
+      ModeState.dangerTimer[entity] = Math.max(0, ModeState.dangerTimer[entity] - fleeDangerDecayStep)
     }
 
     Mood.state[entity] = encodeMoodKind(decision.mood)
@@ -795,30 +1072,29 @@ export function perceptionSystem(ctx: SimulationContext, controls: ControlState)
   })
 }
 
-function findMateTarget(
-  ctx: SimulationContext,
-  entity: number,
-  entityId: number,
-  neighbors: ReturnType<SimulationContext['agentIndex']['query']>,
-): TargetRef | null {
+function findMateTarget(ctx: SimulationContext, entity: number, entityId: number): TargetRef | null {
   const selfGenome = ctx.genomes.get(entityId)
   const birthTick = ctx.birthTick.get(entityId) ?? ctx.tick
   const yearTicks = Math.max(1, ctx.yearTicks || 2400)
   const ageYears = Math.max(0, ctx.tick - birthTick) / yearTicks
-  const maturityAgeYears = clamp(selfGenome?.maturityAgeYears ?? 1, 1, 20)
-  if (ageYears < maturityAgeYears) return null
+  const reproductionMaturityAgeYears = clampGeneValue(
+    'reproductionMaturityAgeYears',
+    selfGenome?.reproductionMaturityAgeYears ?? selfGenome?.maturityAgeYears ?? 0,
+  )
+  if (ageYears < reproductionMaturityAgeYears) return null
 
   const libido = Reproduction.libido[entity]
-  const libidoThreshold = Reproduction.libidoThreshold[entity] || 0.6
-  if (libido < libidoThreshold) return null
-  const awarenessGene = selfGenome?.awareness ?? DNA.awareness[entity] ?? 0.5
-  const heading = Heading.angle[entity]
-  const archetype = decodeArchetype(AgentMeta.archetype[entity])
-  const visualGeneRange =
-    DNA.visionRange[entity] * (1 + (clamp(DNA.awareness[entity] ?? 0.5, 0, 1) - 0.5) * 0.6)
-  const senses = buildSenseProfile(selfGenome, archetype, awarenessGene, heading, visualGeneRange)
+  const libidoThreshold = Reproduction.libidoThreshold[entity]
+  if (!Number.isFinite(libidoThreshold) || libido < libidoThreshold) return null
+  const selfBiome = selfGenome?.biome ?? 'land'
+  const mateRangeValue = selfGenome?.mateRange ?? DNA.mateRange[entity]
+  if (!Number.isFinite(mateRangeValue)) return null
+  const mateRange = clampGeneValue('mateRange', mateRangeValue)
+  const mateSenseRange = mateRange
   let bestId: number | null = null
   let bestDist = Infinity
+  const mePos = { x: Position.x[entity], y: Position.y[entity] }
+  const neighbors = ctx.agentIndex.query(mePos, mateSenseRange)
   neighbors.forEach((bucket) => {
     if (bucket.id === entityId) return
     const mateEntity = ctx.agents.get(bucket.id)
@@ -826,26 +1102,19 @@ function findMateTarget(
     const mateGenome = ctx.genomes.get(bucket.id)
     const mateBirthTick = ctx.birthTick.get(bucket.id) ?? ctx.tick
     const mateAgeYears = Math.max(0, ctx.tick - mateBirthTick) / yearTicks
-    const mateMaturityAge = clamp(mateGenome?.maturityAgeYears ?? 1, 1, 20)
-    if (mateAgeYears < mateMaturityAge) return
+    const mateReproductionMaturityAge = clampGeneValue(
+      'reproductionMaturityAgeYears',
+      mateGenome?.reproductionMaturityAgeYears ?? mateGenome?.maturityAgeYears ?? 0,
+    )
+    if (mateAgeYears < mateReproductionMaturityAge) return
     if (AgentMeta.archetype[mateEntity] !== AgentMeta.archetype[entity]) return
-    if (ModeState.sexCooldown[mateEntity] > 0) return
-    if (Reproduction.libido[mateEntity] < (Reproduction.libidoThreshold[mateEntity] || 0.6)) return
+    const mateBiome = mateGenome?.biome ?? 'land'
+    if (mateBiome !== selfBiome) return
+    if (ctx.pregnancies.has(bucket.id)) return
     const dx = Position.x[mateEntity] - Position.x[entity]
     const dy = Position.y[mateEntity] - Position.y[entity]
     const dist = Math.sqrt(dx * dx + dy * dy)
-    const occ = occlusionFactors(ctx, { x: Position.x[entity], y: Position.y[entity] }, { x: Position.x[mateEntity], y: Position.y[mateEntity] })
-    const seenChance = combinedDetectionChance(
-      senses,
-      dx,
-      dy,
-      dist,
-      awarenessGene,
-      DNA.camo[mateEntity] ?? 0,
-      ctx.rng,
-      occ,
-    )
-    if (ctx.rng() > seenChance) return
+    if (dist > mateSenseRange) return
     if (dist < bestDist) {
       bestDist = dist
       bestId = bucket.id

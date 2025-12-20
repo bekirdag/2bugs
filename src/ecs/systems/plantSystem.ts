@@ -3,13 +3,14 @@ import { removeEntity } from 'bitecs'
 import type { SimulationContext } from '../types'
 
 import { clamp } from '@/utils/math'
-import { FERTILIZER_COST_PER_BIOMASS } from '@/ecs/fertilization'
+import { FERTILIZER_COST_PER_BIOMASS, fertilizerRadiusFromNutrients } from '@/ecs/fertilization'
 
 const SEASON_TICKS = 2400
 const MAX_BIOMASS = 1.6
 const MIN_BIOMASS = 0.1
 const GROWTH_SCALE = 0.12
 const FERTILIZER_GROWTH_MULTIPLIER = 10
+const FERTILIZER_DECAY_TIME = 3600
 // nutrient units per 1.0 biomass of accelerated growth
 
 export function plantGrowthSystem(ctx: SimulationContext, dt: number) {
@@ -19,10 +20,24 @@ export function plantGrowthSystem(ctx: SimulationContext, dt: number) {
 
   let maxFertilizerRadius = 0
   if (ctx.fertilizers.size > 0) {
-    ctx.fertilizers.forEach((fertilizerEntity) => {
+    const toRemove: number[] = []
+    ctx.fertilizers.forEach((fertilizerEntity, id) => {
+      const nutrients = Fertilizer.nutrients[fertilizerEntity] || 0
+      if (nutrients <= 0.1) {
+        toRemove.push(id)
+        return
+      }
+      const decayed = nutrients * Math.exp(-dt / FERTILIZER_DECAY_TIME)
+      Fertilizer.nutrients[fertilizerEntity] = decayed
+      if (decayed <= 0.1) {
+        toRemove.push(id)
+        return
+      }
+      Fertilizer.radius[fertilizerEntity] = fertilizerRadiusFromNutrients(decayed)
       const radius = Fertilizer.radius[fertilizerEntity] || 0
       if (radius > maxFertilizerRadius) maxFertilizerRadius = radius
     })
+    toRemove.forEach((id) => removeFertilizer(ctx, id))
   }
 
   let totalBiomass = 0

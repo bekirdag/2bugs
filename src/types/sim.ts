@@ -15,12 +15,197 @@ export interface DNA {
   baseSpeed: number
   visionRange: number
   hungerThreshold: number
+  hungerRestMultiplier: number
+  hungerSurvivalBufferScale: number
+  growthReserveBase: number
+  growthReserveGreedScale: number
+  satiationBase: number
+  satiationGreedScale: number
+  patrolThresholdMinScale: number
+  patrolThresholdMaxScale: number
+  initialEnergyBirthMultiplier: number
+  initialEnergySeedMultiplier: number
   // When `Energy.value / hungerLine` drops below this ratio, the agent begins actively searching for food.
   // Higher values => starts foraging earlier (more proactive); lower values => waits longer (more risk).
   forageStartRatio: number
   // Desired "fullness" / appetite. Higher values => eats larger bites and keeps eating past satiation,
   // turning more intake into stored fat.
   eatingGreed: number
+  foragePressureBase: number
+  foragePressureVolatility: number
+  greedForageThreshold: number
+  greedForageWeight: number
+  greedForagePressureThreshold: number
+  foragePressureSoftGate: number
+  foragePressureExhaustionBuffer: number
+  sleepPressureWeight: number
+  exhaustionPressureBase: number
+  exhaustionPressureStability: number
+  forageIntensityThreshold: number
+  sleepThresholdBase: number
+  sleepThresholdStability: number
+  // Sleep pressure/efficiency tuning.
+  sleepDebtMax: number
+  sleepDebtGainScale: number
+  sleepDebtStaminaFloor: number
+  sleepEfficiencyBaseline: number
+  sleepEfficiencyFactorBase: number
+  sleepEfficiencyEffectScale: number
+  sleepEfficiencyFactorMin: number
+  sleepEfficiencyFactorMax: number
+  sleepPressureRecoveryWeight: number
+  sleepRecoveryScaleSleep: number
+  sleepRecoveryScaleRecover: number
+  sleepFatigueRecoveryScaleSleep: number
+  sleepFatigueRecoveryScaleRecover: number
+  sleepFatigueGainScale: number
+  sleepStaminaFactorBase: number
+  sleepStaminaFactorOffset: number
+  sleepStaminaFactorScale: number
+  sleepStaminaFactorMin: number
+  sleepStaminaFactorMax: number
+  sleepCircadianRestThreshold: number
+  sleepCircadianStressScale: number
+  sleepCircadianPushScale: number
+  sleepCircadianPreferenceMidpoint: number
+  digestionThresholdBase: number
+  digestionThresholdStability: number
+  recoveryThresholdBase: number
+  recoveryThresholdStability: number
+  greedHungerOffset: number
+  plantHungerBoostThreshold: number
+  plantHungerBoost: number
+  keepEatingMultiplier: number
+  grazeBiteBase: number
+  grazeBiteGreedScale: number
+  grazeBiteMin: number
+  grazeBiteMax: number
+  grazeMinBiomass: number
+  grazeRemoveBiomass: number
+  grazeTargetMinBiomass: number
+  grazeMoistureLoss: number
+  grazeEnergyMultiplier: number
+  grazeHungerBase: number
+  grazeHungerCuriosityScale: number
+  grazeCuriosityForageThreshold: number
+  grazeSearchRadiusBase: number
+  grazeSearchRadiusCuriosityScale: number
+  grazeScoreBiomassWeight: number
+  grazeScoreNutrientWeight: number
+  grazeDistanceFloor: number
+  grazeHungerRatioThreshold: number
+  grazeHungerRatioNoPreyThreshold: number
+  grazeTargetWeightBase: number
+  grazeTargetFatCapacityWeight: number
+  grazeTargetHungerBoostBase: number
+  huntPreyHungerRatioThreshold: number
+  huntTargetDistanceFloor: number
+  huntTargetFocusBase: number
+  huntTargetFocusScale: number
+  huntTargetAggressionBase: number
+  huntTargetAggressionScale: number
+  huntTargetAwarenessBase: number
+  huntTargetAwarenessScale: number
+  huntPreySizeBandScale: number
+  huntPreySizeBandOffset: number
+  huntPreySizeBandMin: number
+  huntPreySizeBandMax: number
+  huntPreySizeBiasBase: number
+  huntPreySizeBiasMin: number
+  huntPreySizeBiasMax: number
+  huntPreySizeOverageBase: number
+  huntPreySizeOverageThreshold: number
+  huntPreySizeOverageMin: number
+  huntPreySizeOverageMax: number
+  huntStickinessLingerBase: number
+  huntStickinessLingerScale: number
+  huntStickinessAttentionBase: number
+  huntStickinessAttentionScale: number
+  huntCarrionHungerRatioThreshold: number
+  huntCarrionNutrientsMin: number
+  huntCarrionDistanceFloor: number
+  huntCarrionFocusBase: number
+  huntCarrionFocusScale: number
+  huntCarrionHungerBase: number
+  huntCarrionHungerScale: number
+  huntCarrionAffinityBase: number
+  huntCarrionAffinityScale: number
+  huntCarrionNutrientBase: number
+  huntCarrionNutrientScale: number
+  huntCarrionNutrientNorm: number
+  huntCarrionNutrientClampMax: number
+  huntCarrionPreferWeight: number
+  huntCorpseReachScale: number
+  huntCorpseReachMin: number
+  huntCorpseReachMax: number
+  fightInitiativeAggressionWeight: number
+  fightInitiativeSizeWeight: number
+  fightInitiativeRandomWeight: number
+  fightInitiativeBiasWeight: number
+  fightExchangeCount: number
+  fightLeverageExponent: number
+  fightVariabilityBase: number
+  fightVariabilityScale: number
+  fightBaseDamage: number
+  fightDamageCap: number
+  scavengeBiteBase: number
+  scavengeBiteMassScale: number
+  scavengeBiteGreedBase: number
+  scavengeBiteMin: number
+  scavengeBiteMax: number
+  scavengeMinNutrients: number
+  fleeFearBiasFearWeight: number
+  fleeFearBiasCowardiceWeight: number
+  fleeSurvivalThreatBase: number
+  fleeSurvivalThreatFearScale: number
+  fleeSurvivalStabilityBase: number
+  fleeSurvivalStabilityScale: number
+  fleeSurvivalStressWeight: number
+  fleeSurvivalThresholdBase: number
+  fleeSurvivalThresholdStabilityScale: number
+  fleeFightDriveAggressionWeight: number
+  fleeFightDrivePersistenceWeight: number
+  fleeBraveFearOffset: number
+  fleeBraveThreatThreshold: number
+  fleeEscapeDurationMin: number
+  fleeEscapeDurationMax: number
+  fleeEscapeTendencyMin: number
+  fleeEscapeTendencyMax: number
+  fleeSizeRatioOffset: number
+  fleeSizeDeltaMin: number
+  fleeSizeDeltaMax: number
+  fleeSizeMultiplierBase: number
+  fleeSizeMultiplierMin: number
+  fleeSizeMultiplierMax: number
+  fleePredatorScaleOffset: number
+  fleePredatorScaleRange: number
+  fleeThreatProximityBase: number
+  fleeThreatDistanceFloor: number
+  fleeThreatProximityWeight: number
+  fleeThreatAwarenessWeight: number
+  fleeThreatCowardiceWeight: number
+  fleeThreatScoreMax: number
+  fleeCowardiceClampMax: number
+  fleeSpeedFloor: number
+  fleeTriggerAwarenessWeight: number
+  fleeTriggerFearWeight: number
+  fleeTriggerCourageWeight: number
+  fleeTriggerNormalization: number
+  fleeTriggerClampMin: number
+  fleeTriggerClampMax: number
+  fleeDangerTimerMin: number
+  fleeDangerHoldIntensityOffset: number
+  fleeDangerHoldIntensityMin: number
+  fleeDangerHoldIntensityMax: number
+  fleeDangerIntensityBase: number
+  fleeDangerDecayStep: number
+  fleeDangerDecayBase: number
+  fleeDangerDecayAttentionOffset: number
+  fleeDangerDecayAttentionScale: number
+  fleeDangerDecayMin: number
+  fleeDangerDecayMax: number
+  fleeSpeedBoostBase: number
+  fleeSpeedBoostStaminaScale: number
   fatCapacity: number
   fatBurnThreshold: number
   patrolThreshold: number
@@ -36,6 +221,45 @@ export interface DNA {
   attentionSpan: number
   libidoThreshold: number
   libidoGainRate: number
+  libidoPressureBase: number
+  libidoPressureStabilityWeight: number
+  curiosityDriveBase: number
+  curiosityDriveStabilityWeight: number
+  exploreThreshold: number
+  idleDriveBase: number
+  idleDriveStabilityWeight: number
+  idleThreshold: number
+  // Distance (world units) at which mating can occur.
+  mateRange: number
+  // Libido ratio threshold (relative to libidoThreshold) to actively roam for mates.
+  mateSearchLibidoRatioThreshold: number
+  // Random-walk widening when roaming for mates.
+  mateSearchTurnJitterScale: number
+  // Base chance (per step) to pick a new random heading while mate-searching.
+  mateSearchTurnChanceBase: number
+  // Curiosity scaling for mate-search random heading changes.
+  mateSearchTurnChanceCuriosityScale: number
+  // Base post-mate cooldown duration (seconds).
+  mateCooldownDuration: number
+  // Cooldown decay: base speed and fertility scaling.
+  mateCooldownScaleBase: number
+  mateCooldownFertilityScale: number
+  mateCooldownScaleMin: number
+  mateCooldownScaleMax: number
+  // Energy cost multiplier applied on mating (scale on gestationCost).
+  mateEnergyCostScale: number
+  // Pregnancy duration tuning.
+  mateGestationBase: number
+  mateGestationScale: number
+  // Patrol/bonding behaviour weights and thresholds.
+  patrolHerdCohesionWeight: number
+  patrolHerdDependencyWeight: number
+  patrolSocialPressureBase: number
+  patrolSocialPressureStabilityWeight: number
+  patrolSocialThresholdBase: number
+  patrolSocialThresholdStabilityWeight: number
+  // Movement multiplier while patrolling.
+  patrolSpeedMultiplier: number
   mutationRate: number
   bodyMass: number
   metabolism: number
@@ -59,9 +283,14 @@ export interface DNA {
   moodStability: number
   // 0..1: >= 0.5 allows eating own archetype.
   cannibalism: number
+  // 0..1: housing terrain preference (rock/open/plants/fertilizer).
+  terrainPreference: number
   // Age in simulation years required before the agent can reproduce.
   // Must be in [1, 20]; species-level variation is encoded genetically.
   maturityAgeYears?: number
+  // Age in simulation years required before the agent can reproduce.
+  // Must be in [0.1, 6]; allows reproduction earlier than full body maturity.
+  reproductionMaturityAgeYears: number
   preferredFood: Archetype[]
   stamina: number
   circadianBias: number
@@ -401,8 +630,8 @@ export interface ControlState {
 export const DEFAULT_WORLD_CONFIG: WorldConfig = {
   bounds: { x: 17280, y: 17280 },
   // 3 archetypes (hunter/prey/scavenger) -> default to 50 each.
-  maxAgents: 150,
-  maxPlants: 225,
+  maxAgents: 300,
+  maxPlants: 450,
   timeStepMs: 50,
   spatialHashCellSize: 64,
   rngSeed: Date.now(),
@@ -412,8 +641,8 @@ export const DEFAULT_WORLD_CONFIG: WorldConfig = {
 export const DEFAULT_CONTROLS: ControlState = {
   speed: 1,
   paused: false,
-  maxAgents: 150,
-  maxPlants: 225,
+  maxAgents: 300,
+  maxPlants: 450,
   mutationRate: 0.01,
   flockingStrength: 1,
   curiosityBias: 0,
